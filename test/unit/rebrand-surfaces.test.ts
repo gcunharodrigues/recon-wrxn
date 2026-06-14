@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { loadConfig, initConfig } from '../../src/config/config.js';
 import { SERVER_NAME } from '../../src/mcp/server.js';
+import { RECON_INSTRUCTIONS } from '../../src/mcp/instructions.js';
 
 const RECON_BIN = join(dirname(fileURLToPath(import.meta.url)), '../../bin/recon-wrxn');
 
@@ -51,6 +52,13 @@ describe('R1b config filename rebrand', () => {
 describe('R1b MCP server identity', () => {
   it('server registers under the recon-wrxn name', () => {
     expect(SERVER_NAME).toBe('recon-wrxn');
+  });
+});
+
+describe('R1c full white-label — MCP instructions carry no Recon brand', () => {
+  it('RECON_INSTRUCTIONS reads recon-wrxn, never the capitalized "Recon" brand', () => {
+    expect(RECON_INSTRUCTIONS).toMatch(/recon-wrxn/);
+    expect(RECON_INSTRUCTIONS).not.toMatch(/\bRecon\b/);
   });
 });
 

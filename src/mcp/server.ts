@@ -1,7 +1,7 @@
 /**
  * MCP Server
  *
- * Creates and configures the Recon MCP server with stdio transport.
+ * Creates and configures the recon-wrxn MCP server with stdio transport.
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';

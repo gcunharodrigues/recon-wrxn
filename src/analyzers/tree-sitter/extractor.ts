@@ -2,7 +2,7 @@
  * Tree-sitter Symbol Extractor
  *
  * Parses source files with tree-sitter, runs S-expression queries,
- * and produces Recon graph nodes + relationships.
+ * and produces recon-wrxn graph nodes + relationships.
  */
 
 import Parser from 'tree-sitter';

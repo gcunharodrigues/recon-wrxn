@@ -59,7 +59,7 @@ function getGitInfo(cwd: string): { commit: string; branch: string } {
 
 /**
  * Index an external project directory and save the result under
- * the main project's .recon/repos/{repoName}/ directory.
+ * the main project's .recon-wrxn/repos/{repoName}/ directory.
  *
  * This enables multi-project support: the MCP server can serve
  * a merged knowledge graph from multiple codebases.
@@ -155,7 +155,7 @@ export async function indexProject(
     node.repo = name;
   }
 
-  // Save under MAIN project's .recon/repos/{name}/
+  // Save under MAIN project's .recon-wrxn/repos/{name}/
   await saveIndex(mainProjectRoot, graph, meta, name);
 
   // Build and save BM25 search index
@@ -557,7 +557,7 @@ export async function statusCommand(options?: { repo?: string }): Promise<void> 
   const git = getGitInfo(projectRoot);
   const stale = meta.gitCommit !== git.commit;
 
-  console.log('Recon Index Status');
+  console.log('recon-wrxn Index Status');
   console.log('='.repeat(34));
   console.log(`  Indexed at:     ${meta.indexedAt}`);
   console.log(`  Git commit:     ${meta.gitCommit}${stale ? ` (HEAD is ${git.commit} ??STALE)` : ' (current)'}`);

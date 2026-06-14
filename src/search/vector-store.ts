@@ -2,7 +2,7 @@
  * In-Memory Vector Store
  *
  * Stores embeddings as Float32Arrays and supports cosine similarity search.
- * Serializable to JSON for persistence in .recon/embeddings.json.
+ * Serializable to JSON for persistence in .recon-wrxn/embeddings.json.
  */
 
 // ─── Types ──────────────────────────────────────────────────────

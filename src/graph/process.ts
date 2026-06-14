@@ -2,7 +2,7 @@
  * Process/Flow Detection
  *
  * Traces execution flows by walking CALLS/CALLS_API edges from scored entry points.
- * Inspired by GitNexus's process-processor.ts but adapted for Recon's architecture.
+ * Inspired by GitNexus's process-processor.ts but adapted for recon-wrxn's architecture.
  *
  * Pipeline:
  *  1. Score entry points (call ratio × export × name patterns × penalty)

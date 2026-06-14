@@ -1,7 +1,7 @@
 /**
  * Query Module
  *
- * Simplified Cypher DSL for querying Recon's knowledge graph.
+ * Simplified Cypher DSL for querying recon-wrxn's knowledge graph.
  */
 
 export { parseCypher, CypherParseError } from './parser.js';

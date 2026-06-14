@@ -1,7 +1,7 @@
 /**
  * Cypher Query Executor
  *
- * Executes parsed Cypher queries against Recon's in-memory KnowledgeGraph.
+ * Executes parsed Cypher queries against recon-wrxn's in-memory KnowledgeGraph.
  * Returns results as markdown tables.
  */
 

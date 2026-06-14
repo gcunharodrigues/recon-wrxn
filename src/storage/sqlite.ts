@@ -1,7 +1,7 @@
 /**
  * SQLite Store
  *
- * Persists the knowledge graph to .recon/recon.db using better-sqlite3.
+ * Persists the knowledge graph to .recon-wrxn/recon.db using better-sqlite3.
  * Provides ACID transactions, FTS5 full-text search, and scales to 500K+ nodes
  * without loading everything into RAM.
  *

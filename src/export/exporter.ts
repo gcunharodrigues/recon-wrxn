@@ -1,7 +1,7 @@
 /**
  * Graph Exporter — Mermaid format output
  *
- * Converts Recon's KnowledgeGraph into Mermaid
+ * Converts recon-wrxn's KnowledgeGraph into Mermaid
  * for use in PRs, docs, README, and architecture diagrams.
  */
 

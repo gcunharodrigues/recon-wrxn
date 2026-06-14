@@ -295,7 +295,7 @@ function handleMap(
 
   // Format output
   const lines: string[] = [
-    '# Recon -- Package Overview',
+    '# recon-wrxn -- Package Overview',
     '',
     `**Stats:** ${packages.length} packages, ${graph.nodeCount} nodes, ${totalRels} relationships`,
   ];

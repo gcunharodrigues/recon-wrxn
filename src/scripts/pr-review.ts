@@ -1,7 +1,7 @@
 /**
  * PR Review Script
  *
- * Loads the Recon index, runs change detection against a base branch,
+ * Loads the recon-wrxn index, runs change detection against a base branch,
  * and outputs a markdown report suitable for posting as a PR comment.
  *
  * Usage: node dist/scripts/pr-review.js [base-branch]

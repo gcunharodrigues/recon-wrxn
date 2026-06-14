@@ -229,9 +229,9 @@ export async function startHttpServer(options: HttpServerOptions): Promise<void>
 
   return new Promise((resolve) => {
     app.listen(port, host, () => {
-      console.log(`Recon HTTP server: http://${host}:${port}`);
+      console.log(`recon-wrxn HTTP server: http://${host}:${port}`);
       if (host === '0.0.0.0') {
-        console.log('WARNING: Exposing Recon on all interfaces.');
+        console.log('WARNING: Exposing recon-wrxn on all interfaces.');
       }
       resolve();
     });

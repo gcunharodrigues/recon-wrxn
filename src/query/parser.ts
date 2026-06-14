@@ -1,7 +1,7 @@
 /**
  * Simplified Cypher DSL Parser
  *
- * Parses a small subset of Cypher syntax against Recon's in-memory graph.
+ * Parses a small subset of Cypher syntax against recon-wrxn's in-memory graph.
  *
  * Supported:
  *   MATCH (n:Type) WHERE n.prop = 'val' RETURN n LIMIT 10

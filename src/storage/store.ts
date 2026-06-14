@@ -1,8 +1,8 @@
 /**
  * JSON File Store
  *
- * Reads/writes graph.json + meta.json to .recon/ directory.
- * Supports multi-repo storage under .recon/repos/{repoName}/.
+ * Reads/writes graph.json + meta.json to .recon-wrxn/ directory.
+ * Supports multi-repo storage under .recon-wrxn/repos/{repoName}/.
  */
 
 import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
@@ -34,8 +34,8 @@ export interface RepoInfo {
 
 /**
  * Resolve the storage directory for a repo.
- * If repoName is provided, uses .recon/repos/{repoName}/.
- * Otherwise uses legacy .recon/ (backwards compat).
+ * If repoName is provided, uses .recon-wrxn/repos/{repoName}/.
+ * Otherwise uses legacy .recon-wrxn/ (backwards compat).
  */
 function getRepoDir(projectRoot: string, repoName?: string): string {
   if (repoName) {
@@ -54,9 +54,9 @@ export function defaultRepoName(projectRoot: string): string {
 }
 
 /**
- * Save graph and metadata to .recon/ directory.
+ * Save graph and metadata to .recon-wrxn/ directory.
  * Creates directory if it doesn't exist.
- * If repoName is provided, saves under .recon/repos/{repoName}/.
+ * If repoName is provided, saves under .recon-wrxn/repos/{repoName}/.
  */
 export async function saveIndex(
   projectRoot: string,
@@ -79,9 +79,9 @@ export async function saveIndex(
 }
 
 /**
- * Load graph and metadata from .recon/ directory.
+ * Load graph and metadata from .recon-wrxn/ directory.
  * Returns null if no index exists.
- * If repoName is provided, loads from .recon/repos/{repoName}/.
+ * If repoName is provided, loads from .recon-wrxn/repos/{repoName}/.
  */
 export async function loadIndex(projectRoot: string, repoName?: string): Promise<StoredIndex | null> {
   const dir = getRepoDir(projectRoot, repoName);
@@ -109,8 +109,8 @@ export async function loadIndex(projectRoot: string, repoName?: string): Promise
 }
 
 /**
- * Save BM25 search index to .recon/search.json.
- * If repoName is provided, saves under .recon/repos/{repoName}/.
+ * Save BM25 search index to .recon-wrxn/search.json.
+ * If repoName is provided, saves under .recon-wrxn/repos/{repoName}/.
  */
 export async function saveSearchIndex(
   projectRoot: string,
@@ -128,13 +128,13 @@ export async function saveSearchIndex(
 }
 
 /**
- * List all indexed repos under .recon/repos/.
- * Also checks for a legacy index directly in .recon/ and includes it as the default repo.
+ * List all indexed repos under .recon-wrxn/repos/.
+ * Also checks for a legacy index directly in .recon-wrxn/ and includes it as the default repo.
  */
 export async function listRepos(projectRoot: string): Promise<RepoInfo[]> {
   const repos: RepoInfo[] = [];
 
-  // Check for legacy index in .recon/ (no repo name)
+  // Check for legacy index in .recon-wrxn/ (no repo name)
   const legacyIndex = await loadIndex(projectRoot);
   if (legacyIndex) {
     repos.push({
@@ -145,7 +145,7 @@ export async function listRepos(projectRoot: string): Promise<RepoInfo[]> {
     });
   }
 
-  // Check for repo-specific indices under .recon/repos/
+  // Check for repo-specific indices under .recon-wrxn/repos/
   const reposDir = join(projectRoot, RECON_DIR, REPOS_DIR);
   if (!existsSync(reposDir)) return repos;
 
@@ -225,7 +225,7 @@ export async function loadAllRepos(projectRoot: string): Promise<{
 }
 
 /**
- * Save vector embeddings to .recon/embeddings.json.
+ * Save vector embeddings to .recon-wrxn/embeddings.json.
  */
 export async function saveEmbeddings(
   projectRoot: string,
@@ -243,7 +243,7 @@ export async function saveEmbeddings(
 }
 
 /**
- * Load vector embeddings from .recon/embeddings.json.
+ * Load vector embeddings from .recon-wrxn/embeddings.json.
  * Returns null if no embeddings exist.
  */
 export async function loadEmbeddings(

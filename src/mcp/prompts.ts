@@ -3,7 +3,7 @@
  *
  * Pre-built prompt templates that guide AI agents through common workflows.
  * Each prompt returns structured user messages with step-by-step instructions
- * that leverage Recon's tools and resources.
+ * that leverage recon-wrxn's tools and resources.
  *
  * Prompts:
  *   pre_commit   — Pre-commit impact analysis

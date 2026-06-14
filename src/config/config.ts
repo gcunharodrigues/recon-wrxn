@@ -1,5 +1,5 @@
 /**
- * Recon Config
+ * recon-wrxn Config
  *
  * Loads and validates `.recon-wrxn.json` from project root.
  * Priority: CLI flags > .recon-wrxn.json > defaults
