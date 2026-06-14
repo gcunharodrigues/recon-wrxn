@@ -1,0 +1,80 @@
+{
+  "name": "recon-mcp",
+  "version": "6.0.0",
+  "description": "Lightweight code intelligence engine for AI agents. Dependency mapping, blast radius analysis, and call graph via MCP.",
+  "type": "module",
+  "main": "dist/cli/index.js",
+  "bin": {
+    "recon": "./bin/recon"
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc && node -e \"const fs=require('fs');fs.cpSync('src/dashboard','dist/dashboard',{recursive:true})\"",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "review": "node dist/scripts/pr-review.js",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "code-intelligence",
+    "mcp",
+    "dependency-graph",
+    "blast-radius",
+    "call-graph",
+    "go",
+    "typescript",
+    "ai-agents"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jhm1909/recon.git"
+  },
+  "homepage": "https://github.com/jhm1909/recon#readme",
+  "bugs": {
+    "url": "https://github.com/jhm1909/recon/issues"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "better-sqlite3": "^12.8.0",
+    "chokidar": "^5.0.0",
+    "commander": "^13.1.0",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "tree-sitter": "^0.21.1",
+    "tree-sitter-c": "^0.21.4",
+    "tree-sitter-c-sharp": "^0.23.1",
+    "tree-sitter-cpp": "^0.22.3",
+    "tree-sitter-go": "^0.25.0",
+    "tree-sitter-java": "^0.21.0",
+    "tree-sitter-javascript": "^0.21.4",
+    "tree-sitter-php": "^0.23.2",
+    "tree-sitter-python": "^0.21.0",
+    "tree-sitter-ruby": "^0.23.1",
+    "tree-sitter-rust": "^0.21.0",
+    "tree-sitter-typescript": "^0.21.2",
+    "typescript": "^5.8.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.0.0",
+    "@types/supertest": "^7.2.0",
+    "supertest": "^7.2.2",
+    "vitest": "^4.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "optionalDependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "tree-sitter-kotlin": "^0.3.8",
+    "tree-sitter-swift": "^0.7.1"
+  }
+}

@@ -1,0 +1,57 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`buildGraphFromExtractions: JavaScript IMPORTS > AC-6g: non-JS (Python) fixture yields ZERO File nodes + ZERO IMPORTS edges (byte-identical) 1`] = `
+{
+  "nodes": [
+    {
+      "endLine": 7,
+      "exported": true,
+      "file": "models/animals.py",
+      "id": "py:class:models/animals.py:Animal",
+      "language": "python",
+      "name": "Animal",
+      "package": "models",
+      "startLine": 5,
+      "type": "Class",
+    },
+    {
+      "endLine": 10,
+      "exported": true,
+      "file": "models/animals.py",
+      "id": "py:func:models/animals.py:make",
+      "language": "python",
+      "name": "make",
+      "package": "models",
+      "startLine": 9,
+      "type": "Function",
+    },
+    {
+      "endLine": 7,
+      "exported": true,
+      "file": "models/animals.py",
+      "id": "py:func:models/animals.py:speak",
+      "language": "python",
+      "name": "speak",
+      "package": "models",
+      "startLine": 6,
+      "type": "Function",
+    },
+  ],
+  "relationships": [
+    {
+      "confidence": 0.7,
+      "id": "py:func:models/animals.py:make-CALLS-py:class:models/animals.py:Animal",
+      "sourceId": "py:func:models/animals.py:make",
+      "targetId": "py:class:models/animals.py:Animal",
+      "type": "CALLS",
+    },
+    {
+      "confidence": 0.7,
+      "id": "py:func:models/animals.py:speak-CALLS-py:func:models/animals.py:make",
+      "sourceId": "py:func:models/animals.py:speak",
+      "targetId": "py:func:models/animals.py:make",
+      "type": "CALLS",
+    },
+  ],
+}
+`;
