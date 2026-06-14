@@ -1,5 +1,5 @@
 
-<h1 align="center">Recon</h1>
+<h1 align="center">recon-wrxn</h1>
 
 <p align="center">
   <strong>Give your AI agent a brain. Index your codebase in 5 seconds.</strong><br/>
@@ -7,9 +7,9 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/recon-mcp"><img src="https://img.shields.io/npm/v/recon-mcp?style=flat-square&color=cb3837" alt="npm version" /></a>
-  <a href="https://www.npmjs.com/package/recon-mcp"><img src="https://img.shields.io/npm/dm/recon-mcp?style=flat-square&color=blue" alt="npm downloads" /></a>
-  <a href="https://github.com/jhm1909/recon/blob/main/LICENSE"><img src="https://img.shields.io/github/license/jhm1909/recon?style=flat-square" alt="license" /></a>
+  <a href="https://www.npmjs.com/package/recon-wrxn"><img src="https://img.shields.io/npm/v/recon-wrxn?style=flat-square&color=cb3837" alt="npm version" /></a>
+  <a href="https://www.npmjs.com/package/recon-wrxn"><img src="https://img.shields.io/npm/dm/recon-wrxn?style=flat-square&color=blue" alt="npm downloads" /></a>
+  <a href="https://github.com/gcunharodrigues/recon-wrxn/blob/main/LICENSE"><img src="https://img.shields.io/github/license/gcunharodrigues/recon-wrxn?style=flat-square" alt="license" /></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-compatible-8A2BE2?style=flat-square" alt="MCP" /></a>
   <img src="https://img.shields.io/badge/tests-541%20passed-brightgreen?style=flat-square" alt="tests" />
 </p>
@@ -29,10 +29,10 @@
 
 **Your AI agent is blind to architecture.** It greps, it guesses, it breaks things in files it never read.
 
-Recon fixes this in one line:
+recon-wrxn fixes this in one line:
 
 ```bash
-npx recon-mcp serve
+npx recon-wrxn serve
 ```
 
 That's it. Your agent now has a knowledge graph of your entire codebase:
@@ -53,13 +53,13 @@ Works with **Claude Code, Cursor, Windsurf** and any MCP client. **Zero config.*
 
 ---
 
-## Why Recon?
+## Why recon-wrxn?
 
 AI coding agents are **blind to architecture**. They read one file at a time, grep for identifiers, guess at call sites, and break things in places they never saw.
 
 You can't fix this with a bigger context window. You need **structure**.
 
-Recon indexes your codebase into a **knowledge graph** — functions, classes, call chains, imports, communities — and exposes it through **8 MCP tools**, **3 prompts**, and **3 resources** that any AI agent can query.
+recon-wrxn indexes your codebase into a **knowledge graph** — functions, classes, call chains, imports, communities — and exposes it through **8 MCP tools**, **3 prompts**, and **3 resources** that any AI agent can query.
 
 > **One command, full awareness.** Your agent gets dependency mapping, blast radius analysis, safe renames, execution flow tracing, natural language search, and code quality analysis — without reading every file.
 
@@ -70,25 +70,25 @@ Recon indexes your codebase into a **knowledge graph** — functions, classes, c
 ```bash
 # Index your project (zero config)
 cd /path/to/your/project
-npx recon-mcp index
+npx recon-wrxn index
 
 # Start MCP server for AI agents
-npx recon-mcp serve
+npx recon-wrxn serve
 
 # Or start HTTP REST API + interactive dashboard
-npx recon-mcp serve --http
+npx recon-wrxn serve --http
 # → http://localhost:3100
 ```
 
 **Global install** (optional):
 
 ```bash
-npm install -g recon-mcp
-recon index && recon serve
+npm install -g recon-wrxn
+recon-wrxn index && recon-wrxn serve
 ```
 
 > Requires **Node.js ≥ 20**. Tree-sitter grammars are bundled as npm dependencies.
-> v6 uses SQLite storage (`.recon/recon.db`) — single file, no JSON sprawl.
+> v6 uses SQLite storage (`.recon-wrxn/recon.db`) — single file, no JSON sprawl.
 
 ---
 
@@ -152,13 +152,13 @@ recon index && recon serve
 
 ## Enhanced Search (Optional)
 
-By default, Recon uses **FTS5 full-text search**. For **hybrid semantic search** (find conceptually similar code, not just exact name matches), install one optional package:
+By default, recon-wrxn uses **FTS5 full-text search**. For **hybrid semantic search** (find conceptually similar code, not just exact name matches), install one optional package:
 
 ```bash
 npm install @huggingface/transformers
 ```
 
-Recon **auto-detects** it and enables hybrid FTS5 + vector search with [all-MiniLM-L6-v2](https://huggingface.co/Xenova/all-MiniLM-L6-v2) embeddings. No extra config or flags needed — just install and re-index.
+recon-wrxn **auto-detects** it and enables hybrid FTS5 + vector search with [all-MiniLM-L6-v2](https://huggingface.co/Xenova/all-MiniLM-L6-v2) embeddings. No extra config or flags needed — just install and re-index.
 
 ## Graph Export
 
@@ -166,13 +166,13 @@ Export the knowledge graph as **Mermaid** (paste in GitHub PRs/docs):
 
 ```bash
 # Mermaid flowchart for a package
-recon export --package mcp --limit 20
+recon-wrxn export --package mcp --limit 20
 
 # Ego graph around a symbol
-recon export --symbol handleQuery --depth 2
+recon-wrxn export --symbol handleQuery --depth 2
 
 # Filter by node types and edge types
-recon export --type Function,Interface --edges CALLS
+recon-wrxn export --type Function,Interface --edges CALLS
 ```
 
 Also available as MCP tool `recon_export` — agents can generate diagrams directly in conversation.
@@ -180,14 +180,14 @@ Also available as MCP tool `recon_export` — agents can generate diagrams direc
 ## How It Works
 
 ```
-You add MCP config → Agent starts Recon automatically → Done.
+You add MCP config → Agent starts recon-wrxn automatically → Done.
 ```
 
 When your AI agent starts:
 
-1. Agent reads MCP config → runs `npx recon-mcp serve`
-2. `npx` downloads Recon from npm (cached after first run)
-3. Recon **auto-indexes** the project (`cwd`) → creates `.recon/recon.db`
+1. Agent reads MCP config → runs `npx recon-wrxn serve`
+2. `npx` downloads recon-wrxn from npm (cached after first run)
+3. recon-wrxn **auto-indexes** the project (`cwd`) → creates `.recon-wrxn/recon.db`
 4. **File watcher** starts → monitors source files for changes
 5. MCP server opens on **stdio** (stdin/stdout) — no network, no port
 6. Agent sees 8 tools + 3 prompts + 3 resources
@@ -215,7 +215,7 @@ Add to your AI agent's MCP config:
   "mcpServers": {
     "recon": {
       "command": "npx",
-      "args": ["recon-mcp", "serve"],
+      "args": ["recon-wrxn", "serve"],
       "cwd": "/path/to/your/project"
     }
   }
@@ -232,7 +232,7 @@ Add to your AI agent's MCP config:
   "mcpServers": {
     "recon": {
       "command": "npx",
-      "args": ["recon-mcp", "serve"],
+      "args": ["recon-wrxn", "serve"],
       "cwd": "/path/to/your/project"
     }
   }
@@ -243,18 +243,18 @@ Add to your AI agent's MCP config:
 </tr>
 </table>
 
-> `cwd` tells Recon **which project to index**. It scans code from this directory and creates `.recon/` there.
+> `cwd` tells recon-wrxn **which project to index**. It scans code from this directory and creates `.recon-wrxn/` there.
 
 ### Multiple Projects
 
-Index and watch multiple projects from a single Recon server using `--projects`:
+Index and watch multiple projects from a single recon-wrxn server using `--projects`:
 
 ```json
 {
   "mcpServers": {
     "recon": {
       "command": "npx",
-      "args": ["recon-mcp", "serve", "--projects", "/path/to/frontend"],
+      "args": ["recon-wrxn", "serve", "--projects", "/path/to/frontend"],
       "cwd": "/path/to/backend"
     }
   }
@@ -270,12 +270,12 @@ Alternatively, run separate servers per project:
   "mcpServers": {
     "recon-backend": {
       "command": "npx",
-      "args": ["recon-mcp", "serve"],
+      "args": ["recon-wrxn", "serve"],
       "cwd": "/path/to/backend"
     },
     "recon-frontend": {
       "command": "npx",
-      "args": ["recon-mcp", "serve"],
+      "args": ["recon-wrxn", "serve"],
       "cwd": "/path/to/frontend"
     }
   }
@@ -287,8 +287,8 @@ For cross-project queries (e.g., tracing API calls from frontend to backend), us
 
 ```bash
 # Index each project with a name
-cd /path/to/backend  && npx recon-mcp index --repo backend
-cd /path/to/frontend && npx recon-mcp index --repo frontend
+cd /path/to/backend  && npx recon-wrxn index --repo backend
+cd /path/to/frontend && npx recon-wrxn index --repo frontend
 ```
 
 ```json
@@ -296,7 +296,7 @@ cd /path/to/frontend && npx recon-mcp index --repo frontend
   "mcpServers": {
     "recon": {
       "command": "npx",
-      "args": ["recon-mcp", "serve"],
+      "args": ["recon-wrxn", "serve"],
       "cwd": "/path/to/backend"
     }
   }
@@ -307,43 +307,43 @@ Then filter by repo in queries: `recon_find({query: "Auth", repo: "backend"})`.
 
 ### Auto-Indexing
 
-`recon serve` handles indexing automatically:
+`recon-wrxn serve` handles indexing automatically:
 
 | Scenario | Behavior |
 |----------|----------|
-| First run (no `.recon/`) | Full index → creates `.recon/recon.db` |
+| First run (no `.recon-wrxn/`) | Full index → creates `.recon-wrxn/recon.db` |
 | Code changed since last index | Incremental re-index (only changed files) |
 | No changes | Uses cached index → instant startup |
-| Force re-index | `recon index --force` |
-| Skip auto-index | `recon serve --no-index` |
-| Index but no watcher | `recon serve --no-watch` |
+| Force re-index | `recon-wrxn index --force` |
+| Skip auto-index | `recon-wrxn serve --no-index` |
+| Index but no watcher | `recon-wrxn serve --no-watch` |
 
-> **Built-in Instructions:** Recon automatically injects [MCP server instructions](https://modelcontextprotocol.io/docs/concepts/server-instructions) into the agent's system prompt. The agent will proactively use `recon_impact` before editing, `recon_explain` for exploration, and `recon_rename` for safe renames — no manual prompting needed.
+> **Built-in Instructions:** recon-wrxn automatically injects [MCP server instructions](https://modelcontextprotocol.io/docs/concepts/server-instructions) into the agent's system prompt. The agent will proactively use `recon_impact` before editing, `recon_explain` for exploration, and `recon_rename` for safe renames — no manual prompting needed.
 
 ---
 
 ## CLI Commands
 
 ```bash
-recon index                        # Index codebase (incremental)
-recon index --force                # Force full re-index
-recon index --repo my-backend      # Index as named repo (multi-repo)
-recon index --embeddings           # Include vector embeddings for semantic search
+recon-wrxn index                        # Index codebase (incremental)
+recon-wrxn index --force                # Force full re-index
+recon-wrxn index --repo my-backend      # Index as named repo (multi-repo)
+recon-wrxn index --embeddings           # Include vector embeddings for semantic search
 
-recon serve                        # Start MCP server on stdio (auto-indexes + live watcher)
-recon serve --projects ../frontend # Watch additional project directories
-recon serve --http                 # Start HTTP REST API + dashboard on :3100
-recon serve --http --port 8080     # Custom port
-recon serve --no-index             # Skip auto-indexing and file watcher
-recon serve --no-watch             # Auto-index but disable file watcher
-recon serve --repo my-backend      # Serve specific repo only
+recon-wrxn serve                        # Start MCP server on stdio (auto-indexes + live watcher)
+recon-wrxn serve --projects ../frontend # Watch additional project directories
+recon-wrxn serve --http                 # Start HTTP REST API + dashboard on :3100
+recon-wrxn serve --http --port 8080     # Custom port
+recon-wrxn serve --no-index             # Skip auto-indexing and file watcher
+recon-wrxn serve --no-watch             # Auto-index but disable file watcher
+recon-wrxn serve --repo my-backend      # Serve specific repo only
 
-recon export                       # Export graph as Mermaid flowchart (Mermaid only)
-recon export --symbol handleQuery  # Ego graph around a symbol
+recon-wrxn export                       # Export graph as Mermaid flowchart (Mermaid only)
+recon-wrxn export --symbol handleQuery  # Ego graph around a symbol
 
-recon status                       # Show index stats
-recon status --repo my-backend     # Status for specific repo
-recon clean                        # Delete index
+recon-wrxn status                       # Show index stats
+recon-wrxn status --repo my-backend     # Status for specific repo
+recon-wrxn clean                   # Delete index
 ```
 
 > **Auto-index:** `serve` checks if the index is up-to-date with the current Git commit. If stale, it re-indexes automatically before starting. Use `--no-index` to skip.
@@ -352,10 +352,10 @@ recon clean                        # Delete index
 
 ## Configuration
 
-Create a `.recon.json` at your project root to persist settings:
+Create a `.recon-wrxn.json` at your project root to persist settings:
 
 ```jsonc
-// .recon.json
+// .recon-wrxn.json
 {
   "projects": ["../frontend"],   // Additional dirs to index + watch
   "embeddings": false,           // Enable vector embeddings
@@ -372,7 +372,7 @@ Create a `.recon.json` at your project root to persist settings:
 }
 ```
 
-**Priority:** CLI flags always override `.recon.json`, which overrides defaults.
+**Priority:** CLI flags always override `.recon-wrxn.json`, which overrides defaults.
 
 With a config file, your MCP setup stays minimal:
 
@@ -381,14 +381,14 @@ With a config file, your MCP setup stays minimal:
   "mcpServers": {
     "recon": {
       "command": "npx",
-      "args": ["recon-mcp", "serve"],
+      "args": ["recon-wrxn", "serve"],
       "cwd": "/path/to/project"
     }
   }
 }
 ```
 
-> No more long `args` arrays — all config lives in `.recon.json`.
+> No more long `args` arrays — all config lives in `.recon-wrxn.json`.
 
 ---
 
@@ -478,7 +478,7 @@ Structured data via `recon://` URIs — agents READ these without making a tool 
 
 ## MCP Prompts
 
-Three guided workflows that instruct AI agents step-by-step using Recon's tools:
+Three guided workflows that instruct AI agents step-by-step using recon-wrxn's tools:
 
 | Prompt | Description | Usage |
 |--------|-------------|-------|
@@ -486,7 +486,7 @@ Three guided workflows that instruct AI agents step-by-step using Recon's tools:
 | **`architecture`** | Architecture documentation with mermaid diagrams | `architecture()` |
 | **`onboard`** | New developer onboarding guide | `onboard(focus: "auth")` |
 
-Each prompt returns a structured message with step-by-step instructions. The agent receives the message and autonomously executes each step using Recon tools.
+Each prompt returns a structured message with step-by-step instructions. The agent receives the message and autonomously executes each step using recon-wrxn tools.
 
 ---
 
@@ -495,7 +495,7 @@ Each prompt returns a structured message with step-by-step instructions. The age
 Start the HTTP server to access the interactive code intelligence dashboard:
 
 ```bash
-recon serve --http  # → http://localhost:3100
+recon-wrxn serve --http  # → http://localhost:3100
 ```
 
 **Features:**
@@ -510,17 +510,17 @@ recon serve --http  # → http://localhost:3100
 
 ## Multi-Repo Support
 
-Index and query multiple repositories from a single `.recon/` directory:
+Index and query multiple repositories from a single `.recon-wrxn/` directory:
 
 ```bash
-cd /path/to/backend && recon index --repo backend
-cd /path/to/frontend && recon index --repo frontend
+cd /path/to/backend && recon-wrxn index --repo backend
+cd /path/to/frontend && recon-wrxn index --repo frontend
 
-recon serve                  # Serve all repos (merged graph)
-recon serve --repo backend   # Serve single repo
+recon-wrxn serve                  # Serve all repos (merged graph)
+recon-wrxn serve --repo backend   # Serve single repo
 ```
 
-All tools accept an optional `repo` parameter. Per-repo indices are stored in `.recon/recon.db`.
+All tools accept an optional `repo` parameter. Per-repo indices are stored in `.recon-wrxn/recon.db`.
 
 ---
 
@@ -537,7 +537,7 @@ FTS5 replaces custom BM25, with camelCase/snake_case tokenization built into SQL
 
 ### Hybrid Semantic Search
 
-Enable with `recon index --embeddings`, then use `recon_find({query: "...", semantic: true})`.
+Enable with `recon-wrxn index --embeddings`, then use `recon_find({query: "...", semantic: true})`.
 
 - **Model:** `Xenova/all-MiniLM-L6-v2` (384-dim embeddings via `@huggingface/transformers`)
 - **Fusion:** Reciprocal Rank Fusion (RRF) — `score = 1/(k + rank)`, k=60
@@ -590,7 +590,7 @@ Enable with `recon index --embeddings`, then use `recon_find({query: "...", sema
 
 ```
   TS Compiler API → components ─┐
-  tree-sitter → 13 languages   ├─→ KnowledgeGraph ─→ .recon/recon.db (SQLite)
+  tree-sitter → 13 languages   ├─→ KnowledgeGraph ─→ .recon-wrxn/recon.db (SQLite)
   router.go → API routes       ─┤   (in-memory)       single database:
   label propagation → clusters ─┤   + FTS5 Index       - nodes, relationships
   BFS → execution flows        ─┘   + Communities      - search index (FTS5)
@@ -621,8 +621,8 @@ Enable with `recon index --embeddings`, then use `recon_find({query: "...", sema
 ## HTTP REST API
 
 ```bash
-recon serve --http              # Listen on :3100
-recon serve --http --port 8080  # Custom port
+recon-wrxn serve --http              # Listen on :3100
+recon-wrxn serve --http --port 8080  # Custom port
 ```
 
 | Method | Path | Description |
@@ -717,7 +717,7 @@ npx vitest --watch # Watch mode
 
 ## Community Detection
 
-After indexing, Recon automatically detects code communities using the **Label Propagation Algorithm (LPA)**:
+After indexing, recon-wrxn automatically detects code communities using the **Label Propagation Algorithm (LPA)**:
 
 - Each function/class/struct gets a `community` label based on its connections
 - Communities are named after the most common package in each cluster
@@ -728,7 +728,7 @@ After indexing, Recon automatically detects code communities using the **Label P
 
 ## Live Re-Indexing
 
-Recon watches source files and updates the knowledge graph **in real-time**:
+recon-wrxn watches source files and updates the knowledge graph **in real-time**:
 
 | Feature | Detail |
 |---------|--------|
@@ -745,7 +745,7 @@ Recon watches source files and updates the knowledge graph **in real-time**:
 
 ### Incremental Indexing
 
-Files are hashed with SHA-256. On `recon index`, only changed files are re-analyzed:
+Files are hashed with SHA-256. On `recon-wrxn index`, only changed files are re-analyzed:
 
 - **TypeScript**: per-file granularity via Compiler API
 - **Tree-sitter**: per-file granularity for all 13 languages
