@@ -52,7 +52,7 @@ afterEach(() => {
 describe('detectV5Index', () => {
   it('returns true when graph.json and meta.json both exist', () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'recon-migrate-'));
-    const reconDir = join(tmpDir, '.recon');
+    const reconDir = join(tmpDir, '.recon-wrxn');
     mkdirSync(reconDir, { recursive: true });
     writeFileSync(join(reconDir, 'graph.json'), '{}');
     writeFileSync(join(reconDir, 'meta.json'), '{}');
@@ -62,7 +62,7 @@ describe('detectV5Index', () => {
 
   it('returns false when no v5 index files are present', () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'recon-migrate-'));
-    const reconDir = join(tmpDir, '.recon');
+    const reconDir = join(tmpDir, '.recon-wrxn');
     mkdirSync(reconDir, { recursive: true });
     // No graph.json or meta.json written
 
@@ -73,7 +73,7 @@ describe('detectV5Index', () => {
 describe('migrateV5ToV6', () => {
   it('migrates nodes, relationships, and meta; creates backup files', async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'recon-migrate-'));
-    const reconDir = join(tmpDir, '.recon');
+    const reconDir = join(tmpDir, '.recon-wrxn');
     mkdirSync(reconDir, { recursive: true });
 
     // Set up v5 JSON files

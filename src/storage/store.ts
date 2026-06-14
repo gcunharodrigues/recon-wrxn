@@ -13,7 +13,7 @@ import type { IndexMeta } from './types.js';
 import type { BM25Index } from '../search/bm25.js';
 import type { VectorStore } from '../search/vector-store.js';
 
-const RECON_DIR = '.recon';
+const RECON_DIR = '.recon-wrxn';
 const REPOS_DIR = 'repos';
 const GRAPH_FILE = 'graph.json';
 const META_FILE = 'meta.json';

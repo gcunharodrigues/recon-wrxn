@@ -3,7 +3,7 @@ import { join } from 'path';
 import { SqliteStore } from './sqlite.js';
 import type { SerializedGraph } from '../graph/types.js';
 
-const RECON_DIR = '.recon';
+const RECON_DIR = '.recon-wrxn';
 
 export function detectV5Index(projectRoot: string): boolean {
   const reconDir = join(projectRoot, RECON_DIR);

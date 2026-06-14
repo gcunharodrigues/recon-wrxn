@@ -80,7 +80,7 @@ export async function indexProject(
   const startTime = performance.now();
   console.error(`[recon] Indexing external project: ${resolvedDir} (repo: ${name})...`);
 
-  // Honor the external project's own .recon.json ignore patterns
+  // Honor the external project's own .recon-wrxn.json ignore patterns
   const extConfig = loadConfig(resolvedDir);
 
   // Build graph
@@ -191,7 +191,7 @@ export async function indexCommand(options: { force?: boolean; repo?: string; em
 
   console.log(`[recon] Indexing from ${projectRoot}${repoName ? ` (repo: ${repoName})` : ''}...`);
 
-  // Load .recon.json so ignore patterns (e.g. worktree subtrees) prune the walk
+  // Load .recon-wrxn.json so ignore patterns (e.g. worktree subtrees) prune the walk
   const config = loadConfig(projectRoot);
 
   // Load previous index for incremental comparison
@@ -336,10 +336,10 @@ export async function indexCommand(options: { force?: boolean; repo?: string; em
   // Generate AGENTS.md
   const agentsMd = generateAgentsMd(graph, repoName);
   const { writeFileSync, mkdirSync } = await import('node:fs');
-  const reconDir = join(projectRoot, '.recon');
+  const reconDir = join(projectRoot, '.recon-wrxn');
   mkdirSync(reconDir, { recursive: true });
   writeFileSync(join(reconDir, 'AGENTS.md'), agentsMd);
-  console.log(`[recon] Generated .recon/AGENTS.md`);
+  console.log(`[recon] Generated .recon-wrxn/AGENTS.md`);
 
   // Build and save BM25 search index
   console.log('[recon] Building search index...');
@@ -405,7 +405,7 @@ export async function indexCommand(options: { force?: boolean; repo?: string; em
   }
   summary.push(`${graph.relationshipCount} relationships in ${elapsed}ms`);
   console.log(`[recon] Indexed ${summary.join(', ')}`);
-  console.log(`[recon] Saved to ${join(projectRoot, '.recon/')}`);
+  console.log(`[recon] Saved to ${join(projectRoot, '.recon-wrxn/')}`);
 }
 
 
@@ -424,7 +424,7 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
     console.log('Migration complete.');
   }
 
-  // Load .recon.json and merge with CLI flags
+  // Load .recon-wrxn.json and merge with CLI flags
   const fileConfig = loadConfig(projectRoot);
   const config = mergeWithCLI(fileConfig, options || {});
 
@@ -481,7 +481,7 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
     // Load specific repo
     const stored = await loadIndex(projectRoot, repoName);
     if (!stored) {
-      console.error(`[recon] No index found for repo '${repoName}'. Run 'npx recon index --repo ${repoName}' first.`);
+      console.error(`[recon] No index found for repo '${repoName}'. Run 'npx recon-wrxn index --repo ${repoName}' first.`);
       process.exit(1);
     }
     graph = stored.graph;
@@ -497,7 +497,7 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
     } else {
       const stored = await loadIndex(projectRoot);
       if (!stored) {
-        console.error("[recon] No index found. Run 'npx recon index' first.");
+        console.error("[recon] No index found. Run 'npx recon-wrxn index' first.");
         process.exit(1);
       }
       graph = stored.graph;
@@ -549,7 +549,7 @@ export async function statusCommand(options?: { repo?: string }): Promise<void> 
   const stored = await loadIndex(projectRoot, repoName);
 
   if (!stored) {
-    console.log('[recon] No index found. Run "npx recon index" first.');
+    console.log('[recon] No index found. Run "npx recon-wrxn index" first.');
     return;
   }
 
@@ -575,7 +575,7 @@ export async function statusCommand(options?: { repo?: string }): Promise<void> 
 
   if (stale) {
     console.log('');
-    console.log('  ??Index is stale. Run "npx recon index" to update.');
+    console.log('  ??Index is stale. Run "npx recon-wrxn index" to update.');
   }
 }
 
@@ -586,7 +586,7 @@ export function cleanCommand(options?: { repo?: string }): void {
   const repoName = options?.repo;
 
   if (repoName) {
-    const repoDir = join(projectRoot, '.recon', 'repos', repoName);
+    const repoDir = join(projectRoot, '.recon-wrxn', 'repos', repoName);
     if (existsSync(repoDir)) {
       rmSync(repoDir, { recursive: true, force: true });
       console.log(`[recon] Index for repo '${repoName}' cleaned.`);
@@ -594,7 +594,7 @@ export function cleanCommand(options?: { repo?: string }): void {
       console.log(`[recon] No index found for repo '${repoName}'.`);
     }
   } else {
-    const reconDir = join(projectRoot, '.recon');
+    const reconDir = join(projectRoot, '.recon-wrxn');
     if (existsSync(reconDir)) {
       rmSync(reconDir, { recursive: true, force: true });
       console.log('[recon] Index cleaned.');
@@ -625,7 +625,7 @@ export async function exportCommand(options: {
   // Load graph
   const stored = await loadIndex(projectRoot, repoName);
   if (!stored) {
-    console.error("[recon] No index found. Run 'npx recon index' first.");
+    console.error("[recon] No index found. Run 'npx recon-wrxn index' first.");
     process.exit(1);
   }
 

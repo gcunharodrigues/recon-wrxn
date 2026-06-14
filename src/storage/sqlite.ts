@@ -17,7 +17,7 @@ import { NodeType, RelationshipType, Language } from '../graph/types.js';
 
 // ─── Constants ─────────────────────────────────────────────────
 
-const RECON_DIR = '.recon';
+const RECON_DIR = '.recon-wrxn';
 const DB_FILE = 'recon.db';
 
 /** Fields stored as columns (not in the meta JSON blob). */

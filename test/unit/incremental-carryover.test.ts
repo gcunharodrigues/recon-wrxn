@@ -228,7 +228,7 @@ describe('analyzeTreeSitter incremental — fileHashes & analyzedFiles', () => {
     // fresh node process runs the same worker path in ~1s.
     const root = fixture(120);
     const reconNodeCount = (): number =>
-      JSON.parse(readFileSync(join(root, '.recon/graph.json'), 'utf-8')).nodes.length;
+      JSON.parse(readFileSync(join(root, '.recon-wrxn/graph.json'), 'utf-8')).nodes.length;
     const index = (args: string[]) =>
       execFileSync('node', [RECON_BIN, 'index', ...args, '--no-embeddings'], {
         cwd: root, stdio: 'pipe',
@@ -245,7 +245,7 @@ describe('analyzeTreeSitter incremental — fileHashes & analyzedFiles', () => {
     writeFileSync(join(root, 'src', 'mod0.py'), `def fn0(x):\n    return x * 999\ndef extra0(y):\n    return y\n`);
     rmSync(join(root, 'src', 'mod1.py'));
     index([]);
-    const g = JSON.parse(readFileSync(join(root, '.recon/graph.json'), 'utf-8'));
+    const g = JSON.parse(readFileSync(join(root, '.recon-wrxn/graph.json'), 'utf-8'));
     const names = new Set(g.nodes.map((n: { name: string }) => n.name));
     expect(names.has('extra0')).toBe(true);  // changed file re-analyzed → fresh symbol
     expect(names.has('fn1')).toBe(false);     // deleted file → node dropped (no ghost)

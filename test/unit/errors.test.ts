@@ -34,7 +34,7 @@ describe('ReconToolError', () => {
   it('creates empty_graph error', () => {
     const err = emptyGraph();
     expect(err.error).toBe('empty_graph');
-    expect(err.suggestion.reason).toContain('npx recon index');
+    expect(err.suggestion.reason).toContain('npx recon-wrxn index');
   });
 
   it('formats error as JSON string', () => {

@@ -17,7 +17,7 @@ import { hashContent } from '../../utils/hash.js';
 // ─── Ignore patterns ────────────────────────────────────────────
 
 const IGNORE_DIRS = new Set([
-  'node_modules', '.git', '.recon', '.reference', 'vendor', 'target',
+  'node_modules', '.git', '.recon-wrxn', '.reference', 'vendor', 'target',
   'build', 'dist', 'out', '.venv', 'venv', '__pycache__', '.mypy_cache',
   '.pytest_cache', '.cargo', 'bin', 'obj', '.gradle', '.idea',
   // Noise dot-dirs: kept skipped now that the blanket `startsWith('.')` skip is gone

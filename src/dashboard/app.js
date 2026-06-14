@@ -155,7 +155,7 @@ async function loadGraph() {
 
 function renderNetwork(data) {
   if (data.nodes.length === 0) {
-    showEmptyState('No nodes to display. Run <code>npx recon index</code> then reload.');
+    showEmptyState('No nodes to display. Run <code>npx recon-wrxn index</code> then reload.');
     return;
   }
 

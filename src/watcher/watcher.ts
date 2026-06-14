@@ -133,7 +133,7 @@ export class ReconWatcher {
       ignored: [
         /node_modules/,
         /\.git/,
-        /\.recon/,
+        /\.recon-wrxn/,
         /dist\//,
         /\.next/,
         /build\//,

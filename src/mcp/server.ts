@@ -30,6 +30,9 @@ import { RECON_PROMPTS, getPromptMessages } from './prompts.js';
 
 const VERSION = '1.0.0';
 
+/** White-labeled MCP server identity (the namespace surfaced to agents). */
+export const SERVER_NAME = 'recon-wrxn';
+
 /**
  * Create a configured MCP Server with all handlers registered.
  */
@@ -39,7 +42,7 @@ export function createServer(
   vectorStore?: VectorStore | null,
 ): Server {
   const server = new Server(
-    { name: 'recon', version: VERSION },
+    { name: SERVER_NAME, version: VERSION },
     {
       capabilities: { tools: {}, resources: {}, prompts: {} },
       instructions: RECON_INSTRUCTIONS,

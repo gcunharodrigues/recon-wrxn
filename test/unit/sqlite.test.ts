@@ -63,8 +63,8 @@ describe('SqliteStore', () => {
 
   // ─── Initialization ──────────────────────────────────────────
 
-  it('creates .recon/recon.db on initialization', () => {
-    const dbPath = join(tmpDir, '.recon', 'recon.db');
+  it('creates .recon-wrxn/recon.db on initialization', () => {
+    const dbPath = join(tmpDir, '.recon-wrxn', 'recon.db');
     expect(existsSync(dbPath)).toBe(true);
   });
 

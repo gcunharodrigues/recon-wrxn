@@ -71,7 +71,7 @@ export function buildProgram(): Command {
 
   program
     .command('clean')
-    .description('Delete the .recon/ index directory')
+    .description('Delete the .recon-wrxn/ index directory')
     .option('--repo <name>', 'Clean only a specific repo index')
     .action((options) => {
       cleanCommand(options);

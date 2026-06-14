@@ -60,6 +60,6 @@ export function indexStale(lastIndexed: string): ReconToolError {
 export function emptyGraph(): ReconToolError {
   return new ReconToolError('empty_graph', undefined, {
     tool: '', params: {},
-    reason: 'No index found. Run: npx recon index',
+    reason: 'No index found. Run: npx recon-wrxn index',
   });
 }

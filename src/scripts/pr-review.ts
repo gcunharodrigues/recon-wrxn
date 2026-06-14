@@ -70,7 +70,7 @@ async function main(): Promise<void> {
 
   // Build PR comment
   const lines: string[] = [
-    `## ${emoji} Recon: Blast Radius Analysis`,
+    `## ${emoji} recon-wrxn: Blast Radius Analysis`,
     '',
     `| Metric | Value |`,
     `|--------|-------|`,
@@ -88,7 +88,7 @@ async function main(): Promise<void> {
     '</details>',
     '',
     '---',
-    `_Analysis by [Recon](https://github.com/jhm1909/recon) v5 \u2014 code intelligence engine_`,
+    `_Analysis by recon-wrxn \u2014 code intelligence engine_`,
   ];
 
   // Output to stdout (GitHub Action captures this)
@@ -122,7 +122,7 @@ async function loadGraph(projectRoot: string): Promise<KnowledgeGraph> {
   // Single index
   const stored = await loadIndex(projectRoot);
   if (!stored) {
-    console.error('[recon] No index found. Run "npx recon index" first.');
+    console.error('[recon] No index found. Run "npx recon-wrxn index" first.');
     process.exit(1);
   }
 

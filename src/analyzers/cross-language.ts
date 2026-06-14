@@ -46,7 +46,7 @@ function findFilesByPattern(rootDir: string, namePatterns: RegExp[]): string[] {
 
     for (const entry of entries) {
       if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'vendor' ||
-          entry.name === 'dist' || entry.name === '.recon') continue;
+          entry.name === 'dist' || entry.name === '.recon-wrxn') continue;
 
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {

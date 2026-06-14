@@ -1,8 +1,8 @@
 /**
  * Recon Config
  *
- * Loads and validates `.recon.json` from project root.
- * Priority: CLI flags > .recon.json > defaults
+ * Loads and validates `.recon-wrxn.json` from project root.
+ * Priority: CLI flags > .recon-wrxn.json > defaults
  */
 
 import { readFileSync, existsSync, writeFileSync } from 'node:fs';
@@ -55,12 +55,12 @@ const DEFAULTS: Required<ReconConfig> = {
   rules: { largeFileThreshold: 30, circularDepsLevel: 'package' as const },
 };
 
-const CONFIG_FILENAME = '.recon.json';
+const CONFIG_FILENAME = '.recon-wrxn.json';
 
 // ─── Loader ──────────────────────────────────────────────────────
 
 /**
- * Load .recon.json from project root.
+ * Load .recon-wrxn.json from project root.
  * Returns defaults if file doesn't exist or is invalid.
  */
 export function loadConfig(projectRoot: string): Required<ReconConfig> {
@@ -121,7 +121,7 @@ const INIT_TEMPLATE: ReconConfig = {
 };
 
 /**
- * Create a .recon.json with defaults.
+ * Create a .recon-wrxn.json with defaults.
  * Returns true if created, false if already exists.
  */
 export function initConfig(projectRoot: string): boolean {
