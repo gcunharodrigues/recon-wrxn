@@ -24,6 +24,7 @@ import { initEmbedder, embedBatch, disposeEmbedder, DEFAULT_CONFIG } from '../se
 import { analyzeTreeSitter, analyzeTreeSitterParallel } from '../analyzers/tree-sitter/index.js';
 import { analyzeMarkdown, findMarkdownFiles } from '../analyzers/markdown.js';
 import type { MarkdownAnalysisResult } from '../analyzers/markdown.js';
+import { resolveDocEdges } from '../analyzers/doc-edges.js';
 import { getAvailableLanguages } from '../analyzers/tree-sitter/index.js';
 import { carryOverUnchangedTreeSitter } from '../analyzers/tree-sitter/carryover.js';
 import { detectCommunities } from '../graph/community.js';
@@ -88,6 +89,12 @@ async function ingestProse(
   }
   for (const rel of mdResult.relationships) {
     graph.addRelationship(rel);
+  }
+  // Resolve doc→code DOCUMENTED_BY edges now that BOTH code (tree-sitter +
+  // cross-language, added before this call) and the prose nodes above are in the
+  // graph (recon-prose-analyzer-06). Unresolvable signals add no edge.
+  for (const edge of resolveDocEdges(graph, mdResult.citations)) {
+    graph.addRelationship(edge);
   }
   await saveSearchText(saveRoot, mdResult.searchText, repoName);
 

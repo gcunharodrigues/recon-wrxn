@@ -267,3 +267,78 @@ describe('analyzeMarkdown — edge cases', () => {
     expect(sections).toHaveLength(0);
   });
 });
+
+// ─── Doc↔code signal extraction (recon-prose-analyzer-06) ─────────
+
+// analyzeMarkdown now also harvests the two high-precision doc→code signals as
+// RAW references (resolution to real code node ids happens later, in the edge
+// resolver, which is the only component with the code graph):
+//   • frontmatter `derived_from:` anchors — a node id, a path, or path#symbol
+//   • `file.ext:line` citations in the prose body
+// Each is reported as a DocCitation { sourceId: <pageId>, ref, kind }.
+describe('analyzeMarkdown — derived_from anchors', () => {
+  it('harvests a scalar derived_from path as an anchor citation on the page', () => {
+    const md = ['---', 'derived_from: src/foo.ts', '---', '# H', 'body', ''].join('\n');
+    const { citations } = analyzeMarkdown([{ path: 'docs/a.md', content: md }]);
+    expect(citations).toContainEqual({
+      sourceId: 'md:page:docs/a.md',
+      ref: 'src/foo.ts',
+      kind: 'anchor',
+    });
+  });
+
+  it('harvests an inline-list derived_from (paths AND graph node ids)', () => {
+    // The documented convention: derived_from: [<path>, <node-id>]
+    const md = ['---', 'derived_from: [src/auth/login.ts, ts:func:login]', '---', '# H', 'b', ''].join('\n');
+    const { citations } = analyzeMarkdown([{ path: 'docs/auth.md', content: md }]);
+    const refs = citations.filter((c) => c.kind === 'anchor').map((c) => c.ref).sort();
+    expect(refs).toEqual(['src/auth/login.ts', 'ts:func:login']);
+    expect(citations.every((c) => c.sourceId === 'md:page:docs/auth.md')).toBe(true);
+  });
+
+  it('harvests a block-sequence derived_from and a path#symbol anchor', () => {
+    const md = [
+      '---',
+      'derived_from:',
+      '  - src/a.ts#alpha',
+      '  - src/b.ts',
+      '---',
+      '# H',
+      'body',
+      '',
+    ].join('\n');
+    const { citations } = analyzeMarkdown([{ path: 'docs/blk.md', content: md }]);
+    const refs = citations.filter((c) => c.kind === 'anchor').map((c) => c.ref).sort();
+    expect(refs).toEqual(['src/a.ts#alpha', 'src/b.ts']);
+  });
+
+  it('a page with no derived_from yields no anchor citations', () => {
+    const md = ['---', 'title: Plain', '---', '# H', 'body src/foo.ts as prose', ''].join('\n');
+    const { citations } = analyzeMarkdown([{ path: 'docs/p.md', content: md }]);
+    expect(citations.filter((c) => c.kind === 'anchor')).toHaveLength(0);
+  });
+});
+
+describe('analyzeMarkdown — file:line citations', () => {
+  it('harvests a `file.ext:line` citation from the prose body', () => {
+    const md = ['# Heading', 'See `src/auth/token.ts:42` for the check.', ''].join('\n');
+    const { citations } = analyzeMarkdown([{ path: 'docs/c.md', content: md }]);
+    expect(citations).toContainEqual({
+      sourceId: 'md:page:docs/c.md',
+      ref: 'src/auth/token.ts:42',
+      kind: 'citation',
+    });
+  });
+
+  it('does NOT harvest a citation from inside a fenced code block (example code)', () => {
+    const md = ['# H', '```sh', 'recon explain --file src/x.ts:99', '```', ''].join('\n');
+    const { citations } = analyzeMarkdown([{ path: 'docs/fence.md', content: md }]);
+    expect(citations.filter((c) => c.kind === 'citation')).toHaveLength(0);
+  });
+
+  it('a body with no file:line reference yields no citations', () => {
+    const md = ['# H', 'Just narrative prose, nothing cited.', ''].join('\n');
+    const { citations } = analyzeMarkdown([{ path: 'docs/none.md', content: md }]);
+    expect(citations).toHaveLength(0);
+  });
+});

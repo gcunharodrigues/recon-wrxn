@@ -486,6 +486,55 @@ describe('recon_impact prose type-gate', () => {
   });
 });
 
+// ─── prose↔code documentation traversal (recon-prose-analyzer-06) ──
+
+describe('recon_explain DOCUMENTED_BY traversal', () => {
+  // A Page documents a Go symbol via a DOCUMENTED_BY edge (Page → code).
+  // Page title is deliberately distinct from every code symbol name so
+  // resolveSymbol's exported-preference does not steal the page (walk note).
+  function graphWithDocEdge(): KnowledgeGraph {
+    const g = buildMockGraph();
+    g.addNode(makeNode('md:page:docs/auth.md', 'Auth Concept Guide', {
+      type: NodeType.Page,
+      file: 'docs/auth.md',
+      language: Language.Markdown,
+      package: 'docs',
+      exported: false,
+    }));
+    // the guide documents ValidateToken (Page → CodeSymbol)
+    g.addRelationship(makeRel(
+      'md:page:docs/auth.md', 'go:func:auth.ValidateToken',
+      RelationshipType.DOCUMENTED_BY,
+    ));
+    return g;
+  }
+
+  it('recon_explain on a PAGE lists the code symbols it documents', async () => {
+    const result = await handleToolCall('recon_explain', {
+      name: 'Auth Concept Guide',
+    }, graphWithDocEdge());
+    expect(result).toContain('# Context: Auth Concept Guide');
+    expect(result).toContain('Documents');
+    expect(result).toContain('ValidateToken');
+  });
+
+  it('recon_explain on a CODE symbol lists the documenting pages', async () => {
+    const result = await handleToolCall('recon_explain', {
+      name: 'ValidateToken',
+    }, graphWithDocEdge());
+    expect(result).toContain('Documented By');
+    expect(result).toContain('Auth Concept Guide');
+  });
+
+  it('a code symbol with no documentation shows no Documented By section', async () => {
+    // DecodeJWT is documented by nobody.
+    const result = await handleToolCall('recon_explain', {
+      name: 'DecodeJWT',
+    }, graphWithDocEdge());
+    expect(result).not.toContain('Documented By');
+  });
+});
+
 describe('recon_map prose type-gate', () => {
   it('excludes prose from the language counts', async () => {
     const g = new KnowledgeGraph();

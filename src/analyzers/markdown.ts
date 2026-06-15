@@ -40,6 +40,22 @@ export interface MarkdownFile {
   content: string;
 }
 
+/**
+ * A RAW doc→code signal harvested from a page, NOT yet resolved to a code node.
+ * Resolution to a real node id happens in the edge resolver (the only component
+ * with the code graph) — see doc-edges.ts. Two high-precision kinds:
+ *   `anchor`   — a frontmatter `derived_from:` entry: a graph node id, a path,
+ *                or `path#symbol` (an optional trailing `@sha` is tolerated).
+ *   `citation` — an explicit `file.ext:line` reference in the prose body.
+ */
+export interface DocCitation {
+  /** The prose node that owns the signal (always the Page). */
+  sourceId: string;
+  /** Raw reference text, resolved later against the code graph. */
+  ref: string;
+  kind: 'anchor' | 'citation';
+}
+
 export interface MarkdownAnalysisResult {
   nodes: Node[];
   relationships: Relationship[];
@@ -48,6 +64,11 @@ export interface MarkdownAnalysisResult {
    * body stays OFF the served graph node while remaining the lexical input.
    */
   searchText: Record<string, string>;
+  /**
+   * Raw doc→code signals (derived_from anchors + file:line citations) harvested
+   * from every page, for the edge resolver to turn into DOCUMENTED_BY edges.
+   */
+  citations: DocCitation[];
   /**
    * Files whose analysis threw (e.g. a pathological construct overflowing the
    * mdast parser) and were SKIPPED. Mirrors the tree-sitter analyzer's
@@ -143,6 +164,60 @@ function frontmatterTitle(yaml: string): string | undefined {
   return value || undefined;
 }
 
+/**
+ * Strip a YAML inline comment + surrounding quotes from one scalar. A comment is
+ * ` #...` (whitespace before `#`), so `path#symbol` (no space before `#`) is
+ * preserved while `[a, b]  # note` loses its trailing comment.
+ */
+function cleanScalar(s: string): string {
+  return s.replace(/\s#.*$/, '').trim().replace(/^["']|["']$/g, '').trim();
+}
+
+/**
+ * Extract `derived_from:` entries from raw YAML frontmatter (no YAML dep). The
+ * documented convention is a list of paths and/or graph node ids:
+ *   derived_from: [src/a.ts, ts:func:login]   # inline flow list
+ *   derived_from: src/a.ts#login              # scalar (path / path#symbol / id)
+ *   derived_from:                             # block sequence
+ *     - src/a.ts
+ *     - ts:func:login
+ * Returns each entry verbatim (resolution happens in the edge resolver).
+ */
+function parseDerivedFrom(yaml: string): string[] {
+  const lines = yaml.split('\n');
+  const idx = lines.findIndex((l) => /^derived_from\s*:/.test(l));
+  if (idx === -1) return [];
+
+  const head = cleanScalar(lines[idx].replace(/^derived_from\s*:/, ''));
+  const out: string[] = [];
+
+  if (head.startsWith('[') && head.endsWith(']')) {
+    for (const part of head.slice(1, -1).split(',')) {
+      const v = cleanScalar(part);
+      if (v) out.push(v);
+    }
+  } else if (head) {
+    out.push(head);
+  } else {
+    // Block sequence: consecutive `- item` lines beneath the key.
+    for (let i = idx + 1; i < lines.length; i++) {
+      const m = lines[i].match(/^\s*-\s*(.+)$/);
+      if (!m) break;
+      const v = cleanScalar(m[1]);
+      if (v) out.push(v);
+    }
+  }
+  return out;
+}
+
+/**
+ * `file.ext:line` citations in prose body. Liberal by design: extraction casts a
+ * wide net; precision is enforced later, where the edge resolver drops any
+ * candidate that does not match a real code node (so a stray `host.com:80` makes
+ * no edge). Requires a path with an extension followed by `:<digits>`.
+ */
+const CITATION_RE = /([A-Za-z0-9_./\\-]+\.[A-Za-z0-9_]+):(\d+)/g;
+
 /** Package grouping for a prose node = its directory ('' for repo-root files). */
 function packageOf(path: string): string {
   const dir = dirname(path);
@@ -185,6 +260,9 @@ function analyzeFile(file: MarkdownFile, out: MarkdownAnalysisResult): void {
     if (child.type === 'yaml') {
       const t = frontmatterTitle(child.value);
       if (t) title = t;
+      for (const ref of parseDerivedFrom(child.value)) {
+        out.citations.push({ sourceId: pageId, ref, kind: 'anchor' });
+      }
       continue;
     }
 
@@ -212,6 +290,14 @@ function analyzeFile(file: MarkdownFile, out: MarkdownAnalysisResult): void {
     if (text) {
       pageParts.push(text);
       if (current) current.parts.push(text);
+    }
+
+    // Harvest `file:line` citations from prose body — but NOT from fenced code
+    // blocks, whose example code would manufacture false citations.
+    if (text && child.type !== 'code') {
+      for (const m of text.matchAll(CITATION_RE)) {
+        out.citations.push({ sourceId: pageId, ref: `${m[1]}:${m[2]}`, kind: 'citation' });
+      }
     }
   }
 
@@ -247,7 +333,7 @@ function analyzeFile(file: MarkdownFile, out: MarkdownAnalysisResult): void {
  * Pure: depends only on the given file contents (the walker is separate).
  */
 export function analyzeMarkdown(files: MarkdownFile[]): MarkdownAnalysisResult {
-  const out: MarkdownAnalysisResult = { nodes: [], relationships: [], searchText: {}, warnings: [] };
+  const out: MarkdownAnalysisResult = { nodes: [], relationships: [], searchText: {}, citations: [], warnings: [] };
   for (const file of files) {
     // Isolate each file: a throw (e.g. RangeError from a pathological construct
     // the mdast parser can't handle) records a warning and SKIPS that file

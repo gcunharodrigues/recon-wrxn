@@ -468,6 +468,32 @@ function handleExplain(
     lines.push('');
   }
 
+  // Prose ↔ code documentation (recon-prose-analyzer-06). DOCUMENTED_BY is
+  // directed Prose → Code, so a Page reads its OUTGOING edges (the code it
+  // documents) and a code symbol reads its INCOMING edges (the documenting
+  // pages). Shown only when present, to avoid noise on the code-symbol majority.
+  const documents = outgoing
+    .filter(r => r.type === RelationshipType.DOCUMENTED_BY)
+    .map(r => refFromRel(graph, r, 'target'));
+  if (documents.length > 0) {
+    lines.push(`### Documents (${documents.length})`);
+    for (const ref of documents) {
+      lines.push(`- ${ref.name} -- \`${ref.file}:${ref.line}\` [${ref.edgeType}]`);
+    }
+    lines.push('');
+  }
+
+  const documentedBy = incoming
+    .filter(r => r.type === RelationshipType.DOCUMENTED_BY)
+    .map(r => refFromRel(graph, r, 'source'));
+  if (documentedBy.length > 0) {
+    lines.push(`### Documented By (${documentedBy.length})`);
+    for (const ref of documentedBy) {
+      lines.push(`- ${ref.name} -- \`${ref.file}:${ref.line}\` [${ref.edgeType}]`);
+    }
+    lines.push('');
+  }
+
   // Test references
   if (testRefs.length > 0) {
     lines.push(`### Test References (${testRefs.length})`);
