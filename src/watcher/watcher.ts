@@ -17,7 +17,8 @@ import { KnowledgeGraph } from '../graph/graph.js';
 import { NodeType, RelationshipType } from '../graph/types.js';
 import { extractFromFile } from '../analyzers/tree-sitter/extractor.js';
 import { getLanguageForFile, isLanguageAvailable } from '../analyzers/tree-sitter/parser.js';
-import { saveIndex } from '../storage/store.js';
+import { analyzeMarkdown } from '../analyzers/markdown.js';
+import { saveIndex, loadSearchText, saveSearchText } from '../storage/store.js';
 import { SqliteStore } from '../storage/sqlite.js';
 import type { IndexMeta } from '../storage/types.js';
 
@@ -85,7 +86,10 @@ const TREE_SITTER_EXTENSIONS = new Set([
   '.go', '.py', '.rs', '.java', '.c', '.cpp', '.rb', '.php', '.kt', '.swift', '.cs',
   '.ts', '.tsx', '.mts', '.cts',
 ]);
-const ALL_EXTENSIONS = new Set([...TREE_SITTER_EXTENSIONS]);
+// Prose has no tree-sitter grammar; it is handled by the standalone markdown
+// analyzer (slice 01) on a separate dispatch branch below.
+const MARKDOWN_EXTENSIONS = new Set(['.md']);
+const ALL_EXTENSIONS = new Set([...TREE_SITTER_EXTENSIONS, ...MARKDOWN_EXTENSIONS]);
 
 function getExtension(path: string): string {
   const dot = path.lastIndexOf('.');
@@ -273,18 +277,25 @@ export class ReconWatcher {
       const startTime = performance.now();
 
       if (event === 'unlink') {
-        const removed = this.graph.removeNodesByFile(relPath);
-        if (removed > 0) {
-          console.error(`[recon:watch] Removed ${removed} nodes (file deleted: ${relPath})`);
-        }
-        if (this.store) {
-          this.store.removeNodesByFile(relPath);
+        if (MARKDOWN_EXTENSIONS.has(ext)) {
+          // Prune the prose nodes AND the file's search-text.json entries.
+          await this.surgicalUpdateMarkdown(absPath, relPath, 'unlink');
+        } else {
+          const removed = this.graph.removeNodesByFile(relPath);
+          if (removed > 0) {
+            console.error(`[recon:watch] Removed ${removed} nodes (file deleted: ${relPath})`);
+          }
+          if (this.store) {
+            this.store.removeNodesByFile(relPath);
+          }
         }
         return;
       }
 
       if (TREE_SITTER_EXTENSIONS.has(ext)) {
         this.surgicalUpdateTreeSitter(absPath, relPath, repoName);
+      } else if (MARKDOWN_EXTENSIONS.has(ext)) {
+        await this.surgicalUpdateMarkdown(absPath, relPath, event);
       }
 
       // Persist file changes to SQLite if store is available
@@ -522,5 +533,74 @@ export class ReconWatcher {
 
     // 9. Re-link incoming callers
     this.relinkCallers(incomingCallers, newSymbolMap, relCounter);
+  }
+
+  // ─── Markdown Surgical Update ──────────────────────────────────
+
+  /**
+   * Surgical live update for a `.md` file — the non-tree-sitter path.
+   *
+   * Prose has no tree-sitter grammar, so it is reparsed with the standalone
+   * markdown analyzer (slice 01). On add/change: drop the file's old prose
+   * nodes, reparse THAT ONE file, re-add its Page/Section nodes + CONTAINS
+   * edges, and update its entries in the search-text.json snapshot. On unlink:
+   * drop the nodes and prune the snapshot. Other files' nodes and snapshot
+   * entries are never touched — the cost is O(one file) (~38ms, SPIKE §6).
+   */
+  private async surgicalUpdateMarkdown(
+    absPath: string,
+    relPath: string,
+    event: string,
+  ): Promise<void> {
+    // A prose file's node ids ARE its search-text.json keys (every Page/Section
+    // node has a searchText entry). Collect them BEFORE removal so the snapshot
+    // is pruned in lock-step with the graph.
+    const staleKeys: string[] = [];
+    for (const node of this.graph.nodes.values()) {
+      if (node.file === relPath) staleKeys.push(node.id);
+    }
+
+    this.graph.removeNodesByFile(relPath);
+
+    let freshSearchText: Record<string, string> = {};
+    if (event !== 'unlink') {
+      let content: string;
+      try {
+        content = readFileSync(absPath, 'utf-8');
+      } catch {
+        // File vanished between the event and the read — treat as a pure
+        // removal: the nodes are already gone, just prune the snapshot.
+        await this.updateSearchTextSnapshot(staleKeys, {});
+        return;
+      }
+
+      const result = analyzeMarkdown([{ path: relPath, content }]);
+      for (const node of result.nodes) this.graph.addNode(node);
+      for (const rel of result.relationships) this.graph.addRelationship(rel);
+      freshSearchText = result.searchText;
+    }
+
+    await this.updateSearchTextSnapshot(staleKeys, freshSearchText);
+  }
+
+  /**
+   * Read-modify-write the search-text.json snapshot: drop the changed file's
+   * old keys, then merge its fresh ones. Scoped to one file, so every other
+   * file's lexical input is preserved. No-op when projectRoot is unknown
+   * (mirrors persistGraph) or when there is nothing to change. Uses the legacy
+   * root location — the same place persistGraph writes graph.json and `serve`
+   * loads the snapshot from in the single-repo case.
+   */
+  private async updateSearchTextSnapshot(
+    staleKeys: string[],
+    fresh: Record<string, string>,
+  ): Promise<void> {
+    if (!this.projectRoot) return;
+    if (staleKeys.length === 0 && Object.keys(fresh).length === 0) return;
+
+    const snapshot = (await loadSearchText(this.projectRoot)) ?? {};
+    for (const key of staleKeys) delete snapshot[key];
+    Object.assign(snapshot, fresh);
+    await saveSearchText(this.projectRoot, snapshot);
   }
 }
