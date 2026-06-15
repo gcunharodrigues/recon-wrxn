@@ -16,6 +16,7 @@ import { detectV5Index, migrateV5ToV6, detectV6Index } from '../storage/migrate.
 import { generateAgentsMd } from '../generators/agents-gen.js';
 import type { IndexMeta } from '../storage/types.js';
 import { startServer } from '../mcp/server.js';
+import { setFulltextRanker } from '../mcp/find.js';
 import { BM25Index } from '../search/bm25.js';
 import { VectorStore } from '../search/vector-store.js';
 import { generateEmbeddingText, isEmbeddable } from '../search/text-generator.js';
@@ -568,12 +569,22 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
     vectorStore = await loadEmbeddings(projectRoot, repoName);
   }
 
-  // Load the prose searchText snapshot into memory. It is the persisted lexical
-  // input for prose retrieval; wiring it into find/BM25 is a downstream slice.
+  // Load the prose searchText snapshot into memory — the persisted lexical input
+  // for prose retrieval (search-text.json: nodeId → heading+body).
   const searchText = await loadSearchText(projectRoot, repoName);
   if (searchText) {
     console.error(`[recon] Loaded ${Object.keys(searchText).length} prose searchText entries`);
   }
+
+  // Build the live fulltext ranker: an in-memory BM25 index over the graph (code
+  // nodes by name/file/package) + the prose searchText (Page/Section by body). Per
+  // ADR 0002 it is DERIVED on serve and never persisted — the cheap index is
+  // rebuilt, only its inputs (graph.json + search-text.json) are stored. Installed
+  // behind the FulltextRanker interface so recon_find → executeFind ranks prose
+  // body without touching the MCP handler.
+  const fulltextRanker = BM25Index.buildFromGraph(graph, searchText ?? undefined);
+  setFulltextRanker(fulltextRanker);
+  console.error(`[recon] BM25 fulltext ranker ready (${fulltextRanker.documentCount} docs, in-memory)`);
 
   if (vectorStore) {
     console.error(`[recon] Loaded ${vectorStore.size} embeddings (${vectorStore.dimensions}d)`);
