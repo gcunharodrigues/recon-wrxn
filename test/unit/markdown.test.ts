@@ -195,3 +195,75 @@ describe('analyzeMarkdown — searchText snapshot', () => {
     expect(pageText).toContain('Setup instructions here');
   });
 });
+
+// ─── Control-char hardening ──────────────────────────────────────
+
+// Heading/frontmatter text is copied verbatim into node.name. Raw C0 control
+// chars / ANSI ESC (0x1b) in a .md would spoof a terminal when the name is
+// printed. node.name must be stripped of C0 control characters (0x00–0x1F).
+// The searchText body is left as-is (it is not surfaced as a label).
+const C0_CONTROL = new RegExp('[' + String.fromCharCode(0) + '-' + String.fromCharCode(31) + ']');
+
+describe('analyzeMarkdown — control-char hardening', () => {
+  it('strips C0 control chars (incl. ESC) from a Section name', () => {
+    // Heading text contains an ESC (0x1b) + an SGR color sequence.
+    const md = '# Head' + String.fromCharCode(27) + '[31mING\nbody\n';
+    const { nodes } = analyzeMarkdown([{ path: 'x.md', content: md }]);
+    const section = nodes.find((n) => n.type === NodeType.Section)!;
+    expect(C0_CONTROL.test(section.name)).toBe(false);
+    expect(section.name).toContain('Head');
+    expect(section.name).toContain('ING');
+  });
+
+  it('strips C0 control chars from a Page title (frontmatter)', () => {
+    const md = '---\ntitle: Evil' + String.fromCharCode(27) + 'Title\n---\n# H\nbody\n';
+    const { nodes } = analyzeMarkdown([{ path: 'y.md', content: md }]);
+    const page = nodes.find((n) => n.type === NodeType.Page)!;
+    expect(C0_CONTROL.test(page.name)).toBe(false);
+    expect(page.name).toContain('Evil');
+    expect(page.name).toContain('Title');
+  });
+});
+
+// ─── Edge cases (behavior lock) ──────────────────────────────────
+
+// Characterization tests: these cases already work by construction; the
+// asserts lock the behavior so downstream slices can rely on it.
+describe('analyzeMarkdown — edge cases', () => {
+  it('a setext (underline) heading becomes a Section', () => {
+    const md = ['Heading One', '===========', 'Body under setext.', ''].join('\n');
+    const { nodes } = analyzeMarkdown([{ path: 'setext.md', content: md }]);
+    const sections = nodes.filter((n) => n.type === NodeType.Section);
+    expect(sections).toHaveLength(1);
+    expect(sections[0].name).toBe('Heading One');
+  });
+
+  it('a file with NO headings yields a Page with zero Sections', () => {
+    const md = 'Just a paragraph, no headings at all.\n';
+    const { nodes } = analyzeMarkdown([{ path: 'flat.md', content: md }]);
+    const pages = nodes.filter((n) => n.type === NodeType.Page);
+    const sections = nodes.filter((n) => n.type === NodeType.Section);
+    expect(pages).toHaveLength(1);
+    expect(pages[0].name).toBe('flat.md');
+    expect(sections).toHaveLength(0);
+  });
+
+  it('an empty file yields a Page with zero Sections', () => {
+    const { nodes } = analyzeMarkdown([{ path: 'empty.md', content: '' }]);
+    const pages = nodes.filter((n) => n.type === NodeType.Page);
+    const sections = nodes.filter((n) => n.type === NodeType.Section);
+    expect(pages).toHaveLength(1);
+    expect(pages[0].id).toBe('md:page:empty.md');
+    expect(sections).toHaveLength(0);
+  });
+
+  it('a frontmatter-only file yields a Page with the title and zero Sections', () => {
+    const md = ['---', 'title: Only Frontmatter', '---', ''].join('\n');
+    const { nodes } = analyzeMarkdown([{ path: 'fm.md', content: md }]);
+    const pages = nodes.filter((n) => n.type === NodeType.Page);
+    const sections = nodes.filter((n) => n.type === NodeType.Section);
+    expect(pages).toHaveLength(1);
+    expect(pages[0].name).toBe('Only Frontmatter');
+    expect(sections).toHaveLength(0);
+  });
+});

@@ -29,6 +29,7 @@ import { frontmatterFromMarkdown } from 'mdast-util-frontmatter';
 import { toString as mdToString } from 'mdast-util-to-string';
 import { NodeType, RelationshipType, Language } from '../graph/types.js';
 import type { Node, Relationship } from '../graph/types.js';
+import type { AnalyzerWarning } from './types.js';
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -47,6 +48,12 @@ export interface MarkdownAnalysisResult {
    * body stays OFF the served graph node while remaining the lexical input.
    */
   searchText: Record<string, string>;
+  /**
+   * Files whose analysis threw (e.g. a pathological construct overflowing the
+   * mdast parser) and were SKIPPED. Mirrors the tree-sitter analyzer's
+   * per-file warnings[]: one bad file never aborts the whole pass.
+   */
+  warnings: AnalyzerWarning[];
 }
 
 // ─── File discovery ──────────────────────────────────────────────
@@ -142,6 +149,18 @@ function packageOf(path: string): string {
   return dir === '.' ? '' : dir;
 }
 
+/**
+ * Strip C0 control characters (0x00–0x1F, incl. ESC 0x1b) from text that becomes
+ * node.name. A heading or frontmatter title is copied verbatim from a .md, so a
+ * raw ANSI escape could spoof the terminal when the name is printed. The
+ * searchText body is left intact (it is not surfaced as a label). The class is
+ * built via fromCharCode to keep raw control bytes out of this source file.
+ */
+const C0_CONTROL = new RegExp('[' + String.fromCharCode(0) + '-' + String.fromCharCode(0x1f) + ']', 'g');
+function stripControlChars(text: string): string {
+  return text.replace(C0_CONTROL, '');
+}
+
 // ─── Analyzer ────────────────────────────────────────────────────
 
 function analyzeFile(file: MarkdownFile, out: MarkdownAnalysisResult): void {
@@ -175,7 +194,7 @@ function analyzeFile(file: MarkdownFile, out: MarkdownAnalysisResult): void {
       const node: Node = {
         id: `md:section:${rel}#${slugify(text)}@${line}`,
         type: NodeType.Section,
-        name: text,
+        name: stripControlChars(text),
         file: rel,
         startLine: line,
         endLine: line,
@@ -199,7 +218,7 @@ function analyzeFile(file: MarkdownFile, out: MarkdownAnalysisResult): void {
   const pageNode: Node = {
     id: pageId,
     type: NodeType.Page,
-    name: title ?? basename(rel),
+    name: stripControlChars(title ?? basename(rel)),
     file: rel,
     startLine: 1,
     endLine: file.content.split('\n').length,
@@ -228,9 +247,19 @@ function analyzeFile(file: MarkdownFile, out: MarkdownAnalysisResult): void {
  * Pure: depends only on the given file contents (the walker is separate).
  */
 export function analyzeMarkdown(files: MarkdownFile[]): MarkdownAnalysisResult {
-  const out: MarkdownAnalysisResult = { nodes: [], relationships: [], searchText: {} };
+  const out: MarkdownAnalysisResult = { nodes: [], relationships: [], searchText: {}, warnings: [] };
   for (const file of files) {
-    analyzeFile(file, out);
+    // Isolate each file: a throw (e.g. RangeError from a pathological construct
+    // the mdast parser can't handle) records a warning and SKIPS that file
+    // instead of aborting the index pass. analyzeFile commits its nodes/edges to
+    // `out` only at the end (after the throw-prone parse + walk), so a failed
+    // file leaves `out` untouched — the skip is atomic.
+    try {
+      analyzeFile(file, out);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      out.warnings.push({ file: file.path, reason: message.split('\n')[0] });
+    }
   }
   return out;
 }
