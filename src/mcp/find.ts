@@ -30,6 +30,26 @@ export interface FindOptions {
   type?: NodeType;
 }
 
+/**
+ * A ranked fulltext retriever. The fulltext strategy delegates ranking to an
+ * implementation of this interface (e.g. an in-memory BM25 index built on serve
+ * from the graph + prose searchText). Decoupling here keeps find.ts free of the
+ * concrete index and lets the serve wiring inject it without find.ts importing it.
+ */
+export interface FulltextRanker {
+  search(query: string, limit?: number): Array<{ nodeId: string; score: number }>;
+}
+
+// Process-default ranker. serveCommand installs the BM25 index here so the live
+// recon_find path (handlers → executeFind, 3 args) ranks prose body without any
+// change to the handler. Null until installed → fulltext falls back to the
+// name/file token scan, preserving behavior for callers that inject nothing.
+let defaultRanker: FulltextRanker | null = null;
+
+export function setFulltextRanker(ranker: FulltextRanker | null): void {
+  defaultRanker = ranker;
+}
+
 // ─── Structural Keywords ─────────────────────────────────────────
 
 const STRUCTURAL_KEYWORDS = [
@@ -286,7 +306,22 @@ function searchFulltext(
   graph: KnowledgeGraph,
   query: string,
   options?: FindOptions,
+  ranker?: FulltextRanker | null,
 ): FindResult[] {
+  // Ranked path: a BM25 (or compatible) index ranks every node — code over
+  // name/file/package, prose over its searchText body. Map the ranked ids back
+  // to graph nodes, then apply type/limit. This replaces the naive +2/+1 scan
+  // as the live fulltext ranker (the scan remains the no-ranker fallback below).
+  if (ranker) {
+    const ranked = ranker.search(query, graph.nodeCount || undefined);
+    const results: FindResult[] = [];
+    for (const { nodeId } of ranked) {
+      const node = graph.getNode(nodeId);
+      if (node) results.push(buildResult(node, graph));
+    }
+    return applyOptions(results, options);
+  }
+
   // Tokenize the query into terms
   const queryTokens = tokenizeName(query.replace(/[^\w\s]/g, ' '));
 
@@ -333,6 +368,7 @@ export function executeFind(
   graph: KnowledgeGraph,
   query: string,
   options?: FindOptions,
+  ranker: FulltextRanker | null = defaultRanker,
 ): FindResult[] {
   const strategy = classifyQuery(query);
 
@@ -344,7 +380,7 @@ export function executeFind(
     case 'structural':
       return searchStructural(graph, query, options);
     case 'fulltext':
-      return searchFulltext(graph, query, options);
+      return searchFulltext(graph, query, options, ranker);
   }
 }
 
