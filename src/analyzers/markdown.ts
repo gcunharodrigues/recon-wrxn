@@ -21,7 +21,8 @@
  * persisted BM25 input — see docs/adr/0002-derived-search-index-persistence.md).
  */
 
-import { basename, dirname } from 'node:path';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { basename, dirname, join, relative } from 'node:path';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { frontmatter } from 'micromark-extension-frontmatter';
 import { frontmatterFromMarkdown } from 'mdast-util-frontmatter';
@@ -46,6 +47,71 @@ export interface MarkdownAnalysisResult {
    * body stays OFF the served graph node while remaining the lexical input.
    */
   searchText: Record<string, string>;
+}
+
+// ─── File discovery ──────────────────────────────────────────────
+
+// Mirrors the tree-sitter analyzer's IGNORE_DIRS so prose and code agree on
+// what is noise. Meaningful dot-dirs (.claude/, .wrxn/) are intentionally NOT
+// here — the wiki lives there and must be walked.
+const IGNORE_DIRS = new Set([
+  'node_modules', '.git', '.recon-wrxn', '.reference', 'vendor', 'target',
+  'build', 'dist', 'out', '.venv', 'venv', '__pycache__', '.mypy_cache',
+  '.pytest_cache', '.cargo', 'bin', 'obj', '.gradle', '.idea',
+  '.vscode', '.github', '.husky', '.next', '.turbo', '.cache', '.aiox',
+]);
+
+const MAX_FILE_SIZE = 1_000_000; // 1 MB — match the tree-sitter walker's cap.
+
+/**
+ * Walk a directory tree for `.md` files, returning each as { path, content }.
+ * Markdown bypasses the tree-sitter walker (no markdown grammar), so it needs
+ * its own discovery. Honors IGNORE_DIRS and config path-prefix ignore patterns.
+ */
+export function findMarkdownFiles(rootDir: string, ignore: string[] = []): MarkdownFile[] {
+  const out: MarkdownFile[] = [];
+
+  const ignorePrefixes = ignore
+    .map((p) => p.replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''))
+    .filter(Boolean);
+  const isIgnoredPath = (rel: string): boolean =>
+    ignorePrefixes.some((p) => rel === p || rel.startsWith(p + '/'));
+
+  const walk = (dir: string): void => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (IGNORE_DIRS.has(entry.name)) continue;
+        const childAbs = join(dir, entry.name);
+        const childRel = relative(rootDir, childAbs).replace(/\\/g, '/');
+        if (isIgnoredPath(childRel)) continue;
+        walk(childAbs);
+      } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
+        const absPath = join(dir, entry.name);
+        try {
+          if (statSync(absPath).size > MAX_FILE_SIZE) continue;
+        } catch {
+          continue;
+        }
+        let content: string;
+        try {
+          content = readFileSync(absPath, 'utf-8');
+        } catch {
+          continue;
+        }
+        out.push({ path: relative(rootDir, absPath).replace(/\\/g, '/'), content });
+      }
+    }
+  };
+
+  walk(rootDir);
+  return out;
 }
 
 // ─── Parse helpers ───────────────────────────────────────────────

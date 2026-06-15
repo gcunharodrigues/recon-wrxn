@@ -10,7 +10,7 @@ import { join, resolve, basename } from 'node:path';
 import { KnowledgeGraph } from '../graph/graph.js';
 import { buildCrossLanguageEdges, extractGoRoutes } from '../analyzers/cross-language.js';
 import type { APIRoute } from '../analyzers/cross-language.js';
-import { saveIndex, saveSearchIndex, saveEmbeddings, loadIndex, loadEmbeddings, loadAllRepos } from '../storage/store.js';
+import { saveIndex, saveSearchIndex, saveEmbeddings, saveSearchText, loadIndex, loadEmbeddings, loadSearchText, loadAllRepos } from '../storage/store.js';
 import { SqliteStore } from '../storage/sqlite.js';
 import { detectV5Index, migrateV5ToV6, detectV6Index } from '../storage/migrate.js';
 import { generateAgentsMd } from '../generators/agents-gen.js';
@@ -21,6 +21,7 @@ import { VectorStore } from '../search/vector-store.js';
 import { generateEmbeddingText, isEmbeddable } from '../search/text-generator.js';
 import { initEmbedder, embedBatch, disposeEmbedder, DEFAULT_CONFIG } from '../search/embedder.js';
 import { analyzeTreeSitter, analyzeTreeSitterParallel } from '../analyzers/tree-sitter/index.js';
+import { analyzeMarkdown, findMarkdownFiles } from '../analyzers/markdown.js';
 import { getAvailableLanguages } from '../analyzers/tree-sitter/index.js';
 import { carryOverUnchangedTreeSitter } from '../analyzers/tree-sitter/carryover.js';
 import { detectCommunities } from '../graph/community.js';
@@ -276,6 +277,19 @@ export async function indexCommand(options: { force?: boolean; repo?: string; em
     `${crossLangResult.result.relationships.length} cross-language edges`,
   );
 
+  // Markdown / prose analysis: ingest .md as Page/Section nodes (tree-sitter
+  // rejects .md, so the analyzer has its own walker). The body text is kept OFF
+  // the graph node and carried in the searchText snapshot persisted below.
+  console.log('[recon] Analyzing markdown prose...');
+  const mdResult = analyzeMarkdown(findMarkdownFiles(projectRoot, config.ignore));
+  for (const node of mdResult.nodes) {
+    graph.addNode(node);
+  }
+  for (const rel of mdResult.relationships) {
+    graph.addRelationship(rel);
+  }
+  console.log(`[recon] Prose: ${mdResult.nodes.length} nodes, ${mdResult.relationships.length} edges`);
+
   // Git info
   const git = getGitInfo(projectRoot);
 
@@ -322,6 +336,10 @@ export async function indexCommand(options: { force?: boolean; repo?: string; em
   }
 
   await saveIndex(projectRoot, graph, meta, repoName);
+
+  // Persist the prose searchText snapshot alongside graph.json (body-OFF the
+  // node; this snapshot is the lexical input for serve — see ADR 0002).
+  await saveSearchText(projectRoot, mdResult.searchText, repoName);
 
   // Also save to SQLite store
   const store = new SqliteStore(projectRoot);
@@ -504,6 +522,13 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
       console.error(`[recon] Loaded index: ${graph.nodeCount} nodes, ${graph.relationshipCount} relationships`);
     }
     vectorStore = await loadEmbeddings(projectRoot, repoName);
+  }
+
+  // Load the prose searchText snapshot into memory. It is the persisted lexical
+  // input for prose retrieval; wiring it into find/BM25 is a downstream slice.
+  const searchText = await loadSearchText(projectRoot, repoName);
+  if (searchText) {
+    console.error(`[recon] Loaded ${Object.keys(searchText).length} prose searchText entries`);
   }
 
   if (vectorStore) {

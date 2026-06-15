@@ -19,6 +19,7 @@ const GRAPH_FILE = 'graph.json';
 const META_FILE = 'meta.json';
 const SEARCH_FILE = 'search.json';
 const EMBEDDINGS_FILE = 'embeddings.json';
+const SEARCH_TEXT_FILE = 'search-text.json';
 
 export interface StoredIndex {
   graph: KnowledgeGraph;
@@ -240,6 +241,47 @@ export async function saveEmbeddings(
 
   const serialized = vectorStore.serialize();
   await writeFile(join(dir, EMBEDDINGS_FILE), JSON.stringify(serialized), 'utf-8');
+}
+
+/**
+ * Save the prose searchText snapshot to .recon-wrxn/search-text.json, alongside
+ * graph.json. Maps each prose node id → its searchText (heading + body). The
+ * body is kept OFF the graph node, so this snapshot is the persisted lexical
+ * input — see docs/adr/0002-derived-search-index-persistence.md.
+ */
+export async function saveSearchText(
+  projectRoot: string,
+  searchText: Record<string, string>,
+  repoName?: string,
+): Promise<void> {
+  const dir = getRepoDir(projectRoot, repoName);
+
+  if (!existsSync(dir)) {
+    await mkdir(dir, { recursive: true });
+  }
+
+  await writeFile(join(dir, SEARCH_TEXT_FILE), JSON.stringify(searchText), 'utf-8');
+}
+
+/**
+ * Load the prose searchText snapshot from .recon-wrxn/search-text.json.
+ * Returns null if no snapshot exists.
+ */
+export async function loadSearchText(
+  projectRoot: string,
+  repoName?: string,
+): Promise<Record<string, string> | null> {
+  const dir = getRepoDir(projectRoot, repoName);
+  const textPath = join(dir, SEARCH_TEXT_FILE);
+
+  if (!existsSync(textPath)) return null;
+
+  try {
+    const raw = await readFile(textPath, 'utf-8');
+    return JSON.parse(raw) as Record<string, string>;
+  } catch {
+    return null;
+  }
 }
 
 /**
