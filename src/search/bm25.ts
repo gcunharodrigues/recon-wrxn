@@ -42,10 +42,24 @@ export function tokenize(text: string): string[] {
 
 /**
  * Build a document string from a graph node for indexing.
- * Combines name, file path, and package — weighted by repetition.
- * Name tokens appear 3x to boost name relevance.
+ *
+ * Code node: name (3x, to boost name relevance) + file path + package.
+ * Prose node (Page/Section): when a searchText snapshot entry exists for the
+ * node id, the document is its searchText (heading + body, persisted in
+ * search-text.json by the markdown analyzer) plus name + file for title/path
+ * signal. Body is NOT weighted 3x — the prose body, not the heading, carries
+ * the conceptual terms a natural-language query targets.
  */
-function nodeToTokens(node: Node): string[] {
+function nodeToTokens(node: Node, searchText?: Record<string, string>): string[] {
+  const body = searchText?.[node.id];
+  if (body !== undefined) {
+    return [
+      ...tokenize(node.name),
+      ...tokenize(node.file),
+      ...tokenize(body),
+    ];
+  }
+
   const nameTokens = tokenize(node.name);
   const fileTokens = tokenize(node.file);
   const pkgTokens = tokenize(node.package);
@@ -86,15 +100,23 @@ export class BM25Index {
   /**
    * Build a BM25 index from all nodes in a KnowledgeGraph.
    * Skips File nodes (not useful for symbol search).
+   *
+   * `searchText` is the optional prose snapshot (search-text.json): nodeId →
+   * heading+body text. When supplied, prose nodes are indexed over their body so
+   * a conceptual query ranks the documenting Page/Section. Omitting it reproduces
+   * the prior code-only document construction exactly (backward compatible).
    */
-  static buildFromGraph(graph: KnowledgeGraph): BM25Index {
+  static buildFromGraph(
+    graph: KnowledgeGraph,
+    searchText?: Record<string, string>,
+  ): BM25Index {
     const index = new BM25Index();
     const entries: DocEntry[] = [];
 
     for (const node of graph.nodes.values()) {
       if (node.type === NodeType.File) continue;
 
-      const tokens = nodeToTokens(node);
+      const tokens = nodeToTokens(node, searchText);
       const tf = new Map<string, number>();
       for (const t of tokens) {
         tf.set(t, (tf.get(t) || 0) + 1);
