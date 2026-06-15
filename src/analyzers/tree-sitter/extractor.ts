@@ -44,6 +44,7 @@ const LANG_PREFIX: Record<Language, string> = {
   [Language.Kotlin]: 'kt',
   [Language.Swift]: 'swift',
   [Language.JavaScript]: 'js',
+  [Language.Markdown]: 'md',
 };
 
 // ─── Capture → NodeType Mapping ─────────────────────────────────

@@ -33,10 +33,12 @@ export enum NodeType {
   Class = 'Class',
   Enum = 'Enum',
   Trait = 'Trait',
+  Page = 'Page',          // Prose: one whole markdown file
+  Section = 'Section',    // Prose: one heading + the body beneath it (primary retrieval unit)
 }
 
 export enum RelationshipType {
-  CONTAINS = 'CONTAINS',       // Package/Module → File
+  CONTAINS = 'CONTAINS',       // Package/Module → File; Page → Section (prose)
   DEFINES = 'DEFINES',         // File → Symbol
   CALLS = 'CALLS',             // Function → Function
   IMPORTS = 'IMPORTS',         // Package → Package
@@ -46,6 +48,7 @@ export enum RelationshipType {
   CALLS_API = 'CALLS_API',    // TS Function → Go Function (cross-language)
   EXTENDS = 'EXTENDS',        // Class → Class (inheritance)
   USES_TYPE = 'USES_TYPE',    // Function/Component → Type (generic type argument usage)
+  DOCUMENTED_BY = 'DOCUMENTED_BY', // Prose (Page/Section) → CodeSymbol (resolution deferred to a later slice)
 }
 
 export enum Language {
@@ -63,6 +66,7 @@ export enum Language {
   Kotlin = 'kotlin',
   Swift = 'swift',
   JavaScript = 'javascript',
+  Markdown = 'markdown',
 }
 
 // ─── Node ───────────────────────────────────────────────────────
