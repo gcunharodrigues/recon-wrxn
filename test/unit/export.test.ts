@@ -72,6 +72,34 @@ describe('Graph Export', () => {
     it('returns empty graph message for no nodes', () => {
       expect(toMermaid([], [])).toContain('No nodes');
     });
+
+    // Prose node names come from attacker-controlled heading/frontmatter text.
+    // A raw `"`/`]` would close the Mermaid label early and let trailing text
+    // become a directive (e.g. a `click` link). Names must be escaped.
+    describe('label injection hardening', () => {
+      it('escapes quotes and brackets so a node name cannot break out of its label', () => {
+        const g = new KnowledgeGraph();
+        g.addNode(makeNode('evil', 'x"] click A "http://evil"', { package: 'p' }));
+        const { nodes, rels } = filterGraph(g, { format: 'mermaid' });
+        const out = toMermaid(nodes, rels);
+
+        // The raw breakout prefix `x"]` must not survive — it is entity-escaped.
+        expect(out).not.toContain('x"]');
+        expect(out).toContain('x&quot;&#93;');
+        expect(out).toContain('&quot;');
+        expect(out).toContain('&#93;');
+      });
+
+      it('replaces a newline in a node name with a space (single-line label)', () => {
+        const g = new KnowledgeGraph();
+        g.addNode(makeNode('nl', 'line1\nline2', { package: 'p' }));
+        const { nodes, rels } = filterGraph(g, { format: 'mermaid' });
+        const out = toMermaid(nodes, rels);
+
+        const label = out.split('\n').find((l) => l.includes('line1'))!;
+        expect(label).toContain('line1 line2');
+      });
+    });
   });
 
   describe('filterGraph', () => {

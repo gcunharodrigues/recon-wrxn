@@ -168,6 +168,20 @@ function mermaidId(id: string): string {
 }
 
 /**
+ * Escape node-name text for safe interpolation into a Mermaid `["..."]` label.
+ * Prose names are attacker-controlled (heading/frontmatter text); a raw `"` or
+ * `]` would close the label early and let trailing text become a directive
+ * (e.g. a `click` link). Quotes/brackets become HTML entities and newlines
+ * collapse to a space so the label stays one line.
+ */
+function mermaidLabel(text: string): string {
+  return text
+    .replace(/"/g, '&quot;')
+    .replace(/]/g, '&#93;')
+    .replace(/[\r\n]+/g, ' ');
+}
+
+/**
  * Generate Mermaid flowchart from filtered graph.
  */
 export function toMermaid(
@@ -195,7 +209,7 @@ export function toMermaid(
     for (const node of pkgNodes) {
       const emoji = NODE_EMOJI[node.type] || '';
       const mid = mermaidId(node.id);
-      lines.push(`        ${mid}["${emoji} ${node.name}"]`);
+      lines.push(`        ${mid}["${emoji} ${mermaidLabel(node.name)}"]`);
 
       // Track for class styling
       if (!typeClasses.has(node.type)) typeClasses.set(node.type, []);
