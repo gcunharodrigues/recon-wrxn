@@ -303,6 +303,40 @@ describe('KnowledgeGraph', () => {
     expect(restored.returnType).toBe('error');
   });
 
+  // Prose (Page/Section) nodes are first-class graph nodes. The graph is
+  // type-agnostic, so they round-trip with NO data migration alongside code.
+  it('round-trips prose Page/Section nodes (type-agnostic, no migration)', () => {
+    const g1 = new KnowledgeGraph();
+    g1.addNode(makeNode('md:page:docs/guide.md', 'The Guide', {
+      type: NodeType.Page,
+      language: Language.Markdown,
+      file: 'docs/guide.md',
+      exported: false,
+    }));
+    g1.addNode(makeNode('md:section:docs/guide.md#overview@6', 'Overview', {
+      type: NodeType.Section,
+      language: Language.Markdown,
+      file: 'docs/guide.md',
+      startLine: 6,
+      exported: false,
+    }));
+    g1.addRelationship(makeRel(
+      'md:page:docs/guide.md',
+      'md:section:docs/guide.md#overview@6',
+      RelationshipType.CONTAINS,
+    ));
+
+    const g2 = KnowledgeGraph.deserialize(JSON.parse(JSON.stringify(g1.serialize())));
+
+    const page = g2.getNode('md:page:docs/guide.md')!;
+    expect(page.type).toBe(NodeType.Page);
+    expect(page.exported).toBe(false);
+    // Body text is OFF the serialized node — it lives in the search-text snapshot.
+    expect('body' in page).toBe(false);
+    expect(g2.getNode('md:section:docs/guide.md#overview@6')!.type).toBe(NodeType.Section);
+    expect(g2.getOutgoing('md:page:docs/guide.md', RelationshipType.CONTAINS)).toHaveLength(1);
+  });
+
   // ─── isTest flag ─────────────────────────────────────────────
 
   it('stores isTest flag on nodes', () => {
