@@ -5,11 +5,20 @@
  * Serializable to JSON for persistence in .recon-wrxn/embeddings.json.
  */
 
+import type { NodeType } from '../graph/types.js';
+
 // ─── Types ──────────────────────────────────────────────────────
 
 export interface VectorEntry {
   nodeId: string;
   embedding: Float32Array;
+  /**
+   * The node's type, so search can be scoped to one modality (code vs prose)
+   * and the two don't dilute each other in one undifferentiated vector space.
+   * Optional for backward compatibility with embeddings.json written before
+   * node-type scoping existed — such entries are excluded from any scoped query.
+   */
+  nodeType?: NodeType;
 }
 
 export interface VectorSearchResult {
@@ -17,11 +26,17 @@ export interface VectorSearchResult {
   score: number; // cosine similarity (0-1, higher is better)
 }
 
+/** Scope a vector search to one or more node types (e.g. Page/Section for prose). */
+export interface VectorSearchOptions {
+  nodeType?: NodeType | NodeType[];
+}
+
 export interface SerializedVectorStore {
   dimensions: number;
   entries: Array<{
     nodeId: string;
     embedding: number[];
+    nodeType?: NodeType;
   }>;
 }
 
@@ -54,36 +69,52 @@ export class VectorStore {
   }
 
   /**
-   * Add a vector entry to the store.
+   * Add a vector entry to the store. `nodeType` enables node-type-scoped search.
    */
-  add(nodeId: string, embedding: Float32Array): void {
+  add(nodeId: string, embedding: Float32Array, nodeType?: NodeType): void {
     if (embedding.length !== this.dimensions) {
       throw new Error(
         `Embedding dimension mismatch: expected ${this.dimensions}, got ${embedding.length}`,
       );
     }
-    this.entries.push({ nodeId, embedding });
+    this.entries.push({ nodeId, embedding, nodeType });
   }
 
   /**
    * Search for the k nearest neighbors by cosine similarity.
+   *
+   * When `options.nodeType` is given, only entries of those types are considered,
+   * so code and prose can be queried independently and don't compete in one space.
+   * Untyped entries (legacy embeddings.json) are excluded from any scoped query.
    */
-  search(query: Float32Array, k: number = 10): VectorSearchResult[] {
+  search(query: Float32Array, k: number = 10, options?: VectorSearchOptions): VectorSearchResult[] {
     if (query.length !== this.dimensions) {
       throw new Error(
         `Query dimension mismatch: expected ${this.dimensions}, got ${query.length}`,
       );
     }
 
+    const filter = options?.nodeType;
+    const allowed = filter == null ? null : new Set(Array.isArray(filter) ? filter : [filter]);
+
     const scored: VectorSearchResult[] = [];
 
     for (const entry of this.entries) {
+      if (allowed && (entry.nodeType === undefined || !allowed.has(entry.nodeType))) continue;
       const score = cosineSimilarity(query, entry.embedding);
       scored.push({ nodeId: entry.nodeId, score });
     }
 
     scored.sort((a, b) => b.score - a.score);
     return scored.slice(0, k);
+  }
+
+  /**
+   * Get a node's stored embedding, or undefined if absent. Lets an incremental
+   * re-index carry an unchanged node's vector forward without re-embedding it.
+   */
+  get(nodeId: string): Float32Array | undefined {
+    return this.entries.find(e => e.nodeId === nodeId)?.embedding;
   }
 
   /**
@@ -113,12 +144,13 @@ export class VectorStore {
       entries: this.entries.map(e => ({
         nodeId: e.nodeId,
         embedding: Array.from(e.embedding),
+        nodeType: e.nodeType,
       })),
     };
   }
 
   /**
-   * Deserialize from JSON.
+   * Deserialize from JSON. Tolerates legacy entries with no `nodeType`.
    */
   static deserialize(data: SerializedVectorStore): VectorStore {
     const store = new VectorStore(data.dimensions);
@@ -126,6 +158,7 @@ export class VectorStore {
       store.entries.push({
         nodeId: entry.nodeId,
         embedding: new Float32Array(entry.embedding),
+        nodeType: entry.nodeType,
       });
     }
     return store;

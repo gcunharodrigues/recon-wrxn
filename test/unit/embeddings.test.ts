@@ -528,3 +528,206 @@ describe('embeddingDecision (--embeddings / --no-embeddings tri-state)', () => {
     expect(embeddingDecision(false)).toEqual({ embed: false, autoDetect: false });
   });
 });
+
+// ─── Prose embeddability + embedding text (recon-prose-analyzer-03) ──
+
+function makeProse(id: string, name: string, type: NodeType, file = 'docs/x.md'): Node {
+  return {
+    id,
+    type,
+    name,
+    file,
+    startLine: 1,
+    endLine: 1,
+    language: Language.Markdown,
+    package: 'docs',
+    exported: false,
+  };
+}
+
+describe('prose embeddability', () => {
+  it('Page and Section are embeddable', () => {
+    expect(isEmbeddable(makeProse('md:page:a.md', 'A', NodeType.Page))).toBe(true);
+    expect(isEmbeddable(makeProse('md:section:a.md#h', 'H', NodeType.Section))).toBe(true);
+  });
+});
+
+describe('prose embedding text', () => {
+  it('embeds the prose body (searchText) for a Page, alongside its title', () => {
+    const node = makeProse('md:page:concepts/sync.md', 'Doc Sync Pattern', NodeType.Page);
+    const body = 'Keeping documentation aligned with the source it describes over time.';
+    const text = generateEmbeddingText(node, body);
+    expect(text).toContain('Doc Sync Pattern');
+    expect(text).toContain(body);
+  });
+
+  it('embeds the heading + body for a Section', () => {
+    const node = makeProse('md:section:concepts/sync.md#why', 'Why it matters', NodeType.Section);
+    const body = 'Why it matters Drift between prose and code erodes trust in the docs.';
+    const text = generateEmbeddingText(node, body);
+    expect(text).toContain('Why it matters');
+    expect(text).toContain('erodes trust');
+  });
+
+  it('falls back to the node name when no prose body is provided', () => {
+    const node = makeProse('md:page:concepts/sync.md', 'Doc Sync Pattern', NodeType.Page);
+    expect(generateEmbeddingText(node)).toContain('Doc Sync Pattern');
+  });
+
+  it('does NOT leak the prose-text argument into code-node text', () => {
+    const code = makeNode('f1', 'getUserById');
+    const text = generateEmbeddingText(code, 'PROSE_BODY_SHOULD_NOT_APPEAR');
+    expect(text).not.toContain('PROSE_BODY_SHOULD_NOT_APPEAR');
+    expect(text).toContain('Function: getUserById');
+  });
+});
+
+// ─── node_type-scoped vector search (recon-prose-analyzer-03) ────────
+
+describe('VectorStore node-type scoping', () => {
+  it('add() records a node type and get() returns the stored embedding', () => {
+    const store = new VectorStore(3);
+    const emb = new Float32Array([1, 0, 0]);
+    store.add('md:page:a.md', emb, NodeType.Page);
+
+    expect(store.get('md:page:a.md')).toEqual(emb);
+    expect(store.get('missing')).toBeUndefined();
+  });
+
+  it('scopes search to a single node type — code and prose query independently', () => {
+    const store = new VectorStore(3);
+    store.add('code:f', new Float32Array([1, 0, 0]), NodeType.Function);
+    store.add('md:page:a.md', new Float32Array([0.99, 0.14, 0]), NodeType.Page);
+
+    const prose = store.search(new Float32Array([1, 0, 0]), 10, { nodeType: NodeType.Page });
+    expect(prose.map(r => r.nodeId)).toEqual(['md:page:a.md']);
+
+    const code = store.search(new Float32Array([1, 0, 0]), 10, { nodeType: NodeType.Function });
+    expect(code.map(r => r.nodeId)).toEqual(['code:f']);
+  });
+
+  it('scopes search to a set of node types (Page + Section)', () => {
+    const store = new VectorStore(3);
+    store.add('code:f', new Float32Array([1, 0, 0]), NodeType.Function);
+    store.add('md:page:a.md', new Float32Array([0, 1, 0]), NodeType.Page);
+    store.add('md:section:a.md#h', new Float32Array([0, 0, 1]), NodeType.Section);
+
+    const ids = store
+      .search(new Float32Array([0, 1, 1]), 10, { nodeType: [NodeType.Page, NodeType.Section] })
+      .map(r => r.nodeId)
+      .sort();
+    expect(ids).toEqual(['md:page:a.md', 'md:section:a.md#h']);
+  });
+
+  it('excludes untyped entries from a type-scoped query', () => {
+    const store = new VectorStore(3);
+    store.add('legacy-untyped', new Float32Array([1, 0, 0]));
+    store.add('md:page:a.md', new Float32Array([1, 0, 0]), NodeType.Page);
+
+    const ids = store.search(new Float32Array([1, 0, 0]), 10, { nodeType: NodeType.Page }).map(r => r.nodeId);
+    expect(ids).toEqual(['md:page:a.md']);
+  });
+
+  it('unscoped search still returns every entry (back-compat)', () => {
+    const store = new VectorStore(3);
+    store.add('code:f', new Float32Array([1, 0, 0]), NodeType.Function);
+    store.add('md:page:a.md', new Float32Array([0, 1, 0]), NodeType.Page);
+    expect(store.search(new Float32Array([1, 1, 0]), 10).length).toBe(2);
+  });
+
+  it('round-trips node type through serialize/deserialize', () => {
+    const store = new VectorStore(3);
+    store.add('md:page:a.md', new Float32Array([0, 1, 0]), NodeType.Page);
+
+    const restored = VectorStore.deserialize(store.serialize());
+    const ids = restored.search(new Float32Array([0, 1, 0]), 10, { nodeType: NodeType.Page }).map(r => r.nodeId);
+    expect(ids).toEqual(['md:page:a.md']);
+  });
+
+  it('deserializes legacy embeddings.json with no nodeType field', () => {
+    const legacy: SerializedVectorStore = {
+      dimensions: 3,
+      entries: [{ nodeId: 'old', embedding: [1, 0, 0] }],
+    };
+    const store = VectorStore.deserialize(legacy);
+    expect(store.has('old')).toBe(true);
+    // untyped → unscoped search finds it, scoped search does not
+    expect(store.search(new Float32Array([1, 0, 0]), 10).length).toBe(1);
+    expect(store.search(new Float32Array([1, 0, 0]), 10, { nodeType: NodeType.Page }).length).toBe(0);
+  });
+});
+
+// ─── SHA-256 incremental freshness (recon-prose-analyzer-03) ─────────
+
+describe('partitionEmbeddingWork (SHA-256 freshness)', () => {
+  const item = (id: string, file: string) => ({ id, type: NodeType.Page, file, text: id });
+
+  it('carries over a node whose file hash is unchanged and is already embedded', async () => {
+    const { partitionEmbeddingWork } = await import('../../src/cli/commands.js');
+    const prev = new VectorStore(3);
+    prev.add('md:page:a.md', new Float32Array([1, 0, 0]), NodeType.Page);
+
+    const { carryOver, reEmbed } = partitionEmbeddingWork(
+      [item('md:page:a.md', 'a.md')],
+      prev,
+      { 'a.md': 'h1' },
+      { 'a.md': 'h1' },
+    );
+    expect(carryOver.map(i => i.id)).toEqual(['md:page:a.md']);
+    expect(reEmbed).toEqual([]);
+  });
+
+  it('re-embeds a node whose file hash changed', async () => {
+    const { partitionEmbeddingWork } = await import('../../src/cli/commands.js');
+    const prev = new VectorStore(3);
+    prev.add('md:page:a.md', new Float32Array([1, 0, 0]), NodeType.Page);
+
+    const { carryOver, reEmbed } = partitionEmbeddingWork(
+      [item('md:page:a.md', 'a.md')],
+      prev,
+      { 'a.md': 'OLD' },
+      { 'a.md': 'NEW' },
+    );
+    expect(carryOver).toEqual([]);
+    expect(reEmbed.map(i => i.id)).toEqual(['md:page:a.md']);
+  });
+
+  it('re-embeds a brand-new node absent from the previous store', async () => {
+    const { partitionEmbeddingWork } = await import('../../src/cli/commands.js');
+    const prev = new VectorStore(3); // empty
+    const { carryOver, reEmbed } = partitionEmbeddingWork(
+      [item('md:page:new.md', 'new.md')],
+      prev,
+      { 'new.md': 'h' },
+      { 'new.md': 'h' },
+    );
+    expect(carryOver).toEqual([]);
+    expect(reEmbed.map(i => i.id)).toEqual(['md:page:new.md']);
+  });
+
+  it('re-embeds when the previous index had no hash for the file', async () => {
+    const { partitionEmbeddingWork } = await import('../../src/cli/commands.js');
+    const prev = new VectorStore(3);
+    prev.add('md:page:a.md', new Float32Array([1, 0, 0]), NodeType.Page);
+    const { carryOver, reEmbed } = partitionEmbeddingWork(
+      [item('md:page:a.md', 'a.md')],
+      prev,
+      {}, // no prior hash (e.g. first index after the prose-embed upgrade)
+      { 'a.md': 'h' },
+    );
+    expect(carryOver).toEqual([]);
+    expect(reEmbed.map(i => i.id)).toEqual(['md:page:a.md']);
+  });
+
+  it('re-embeds everything when there is no previous store (force / first index)', async () => {
+    const { partitionEmbeddingWork } = await import('../../src/cli/commands.js');
+    const { carryOver, reEmbed } = partitionEmbeddingWork(
+      [item('md:page:a.md', 'a.md'), item('md:page:b.md', 'b.md')],
+      null,
+      undefined,
+      { 'a.md': 'h', 'b.md': 'h' },
+    );
+    expect(carryOver).toEqual([]);
+    expect(reEmbed.length).toBe(2);
+  });
+});

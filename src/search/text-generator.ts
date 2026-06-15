@@ -31,7 +31,12 @@ const EMBEDDABLE_TYPES = new Set<NodeType>([
   NodeType.Enum,
   NodeType.Trait,
   NodeType.Module,
+  NodeType.Page,
+  NodeType.Section,
 ]);
+
+/** Prose node types: their meaning lives in natural-language body text, not a code signature. */
+const PROSE_TYPES = new Set<NodeType>([NodeType.Page, NodeType.Section]);
 
 /**
  * Check if a node should be embedded.
@@ -41,9 +46,21 @@ export function isEmbeddable(node: Node): boolean {
 }
 
 /**
- * Generate structured text from a node for embedding.
+ * Generate text from a node for embedding.
+ *
+ * Code nodes get the structured signature format below. Prose nodes (Page/Section)
+ * carry their meaning in natural-language body text that is kept OFF the graph node
+ * (see analyzers/markdown.ts + ADR 0002), so the caller passes that body via
+ * `proseText` — the persisted searchText snapshot (heading + body). Embedding the
+ * prose body, not a synthetic signature, is what lets a conceptual query match a
+ * page that shares no surface keywords with it.
  */
-export function generateEmbeddingText(node: Node): string {
+export function generateEmbeddingText(node: Node, proseText?: string): string {
+  if (PROSE_TYPES.has(node.type)) {
+    const body = proseText?.trim();
+    return body ? `${node.name}\n${body}` : node.name;
+  }
+
   const parts: string[] = [];
 
   // Type and name
