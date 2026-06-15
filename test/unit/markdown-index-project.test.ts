@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { indexProject } from '../../src/cli/commands.js';
 import { loadIndex, loadSearchText } from '../../src/storage/store.js';
-import { NodeType } from '../../src/graph/types.js';
+import { NodeType, RelationshipType } from '../../src/graph/types.js';
 
 const REPO = 'extrepo';
 let extDir: string;
@@ -25,10 +25,16 @@ beforeAll(() => {
   extDir = mkdtempSync(join(tmpdir(), 'recon-ext-'));
   mainRoot = mkdtempSync(join(tmpdir(), 'recon-main-'));
   mkdirSync(join(extDir, 'docs'), { recursive: true });
+  mkdirSync(join(extDir, 'lib'), { recursive: true });
+  // A code file the guide's frontmatter anchor will link to (recon-prose-analyzer-06).
+  writeFileSync(
+    join(extDir, 'lib', 'auth.ts'),
+    'export function validateToken(token: string): boolean {\n  return token.length > 0;\n}\n',
+  );
   writeFileSync(join(extDir, 'README.md'), '# Ext Readme\nExternal readme body.\n');
   writeFileSync(
     join(extDir, 'docs', 'guide.md'),
-    '---\ntitle: Ext Guide\n---\n# Guide\nGuide body.\n\n## Details\nDetail text.\n',
+    '---\ntitle: Ext Guide\nderived_from: lib/auth.ts#validateToken\n---\n# Guide\nGuide body.\n\n## Details\nDetail text.\n',
   );
 });
 
@@ -63,5 +69,22 @@ describe('indexProject ingests prose for secondary repos', () => {
     const snapshot = await loadSearchText(mainRoot, REPO);
     expect(snapshot).not.toBeNull();
     expect(snapshot!['md:page:docs/guide.md']).toContain('Guide body.');
+  });
+
+  it('resolves a derived_from anchor into a DOCUMENTED_BY edge to real code', async () => {
+    await indexProject(extDir, mainRoot, REPO);
+
+    const stored = await loadIndex(mainRoot, REPO);
+    expect(stored).not.toBeNull();
+
+    const docEdges = [...stored!.graph.relationships.values()].filter(
+      (r) => r.type === RelationshipType.DOCUMENTED_BY,
+    );
+    // The guide frontmatter anchor links the page to the validateToken symbol.
+    expect(docEdges).toHaveLength(1);
+    expect(docEdges[0].sourceId).toBe('md:page:docs/guide.md');
+    const target = stored!.graph.getNode(docEdges[0].targetId);
+    expect(target?.name).toBe('validateToken');
+    expect(target?.file).toBe('lib/auth.ts');
   });
 });
