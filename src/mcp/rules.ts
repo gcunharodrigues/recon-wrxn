@@ -39,6 +39,26 @@ export interface RuleOptions {
   threshold?: number;
 }
 
+// ─── Prose type-gate (shared predicate) ─────────────────────────
+
+/**
+ * Prose node-types (markdown Page / Section). The single auditable place that
+ * classifies a node as prose rather than code, so prose is kept out of the
+ * code-only analyses: dead_code + unused_exports (defense-in-depth atop slice
+ * 01's `exported:false`), the impact blast-radius BFS, and recon_map language
+ * counts. NOT applied to large_files (prose flagging accepted) or orphans
+ * (already File-gated).
+ */
+export const PROSE_TYPES: ReadonlySet<NodeType> = new Set<NodeType>([
+  NodeType.Page,
+  NodeType.Section,
+]);
+
+/** True when a node-type is prose (a markdown Page or Section), not code. */
+export function isProseType(type: NodeType): boolean {
+  return PROSE_TYPES.has(type);
+}
+
 // ─── Dispatcher ─────────────────────────────────────────────────
 
 export function runRule(
@@ -84,6 +104,7 @@ function ruleDeadCode(graph: KnowledgeGraph): RuleResult {
   for (const node of graph.nodes.values()) {
     if (!node.exported) continue;
     if (EXCLUDED_TYPES.has(node.type)) continue;
+    if (isProseType(node.type)) continue;
     if (node.isTest) continue;
 
     const incoming = graph.getIncoming(node.id);
@@ -123,6 +144,7 @@ function ruleUnusedExports(graph: KnowledgeGraph): RuleResult {
   for (const node of graph.nodes.values()) {
     if (!node.exported) continue;
     if (EXCLUDED_TYPES.has(node.type)) continue;
+    if (isProseType(node.type)) continue;
 
     const incoming = graph.getIncoming(node.id);
 

@@ -454,3 +454,62 @@ describe('empty graph', () => {
     expect(result).toContain('Package Overview');
   });
 });
+
+// ─── prose type-gate (recon-prose-analyzer-05) ──────────────────
+
+describe('recon_impact prose type-gate', () => {
+  it('excludes prose nodes from the blast radius of a code symbol', async () => {
+    const g = new KnowledgeGraph();
+    g.addNode(makeNode('go:func:Core', 'CoreFn', { file: 'internal/core/core.go' }));
+    g.addNode(makeNode('go:func:Caller', 'CallerFn', { file: 'internal/core/caller.go' }));
+    g.addNode(makeNode('md:page:doc', 'Core Architecture Guide', {
+      type: NodeType.Page,
+      file: 'docs/core.md',
+      language: Language.Markdown,
+      package: 'docs',
+      exported: false,
+    }));
+    // code dependency: CallerFn calls CoreFn
+    g.addRelationship(makeRel('go:func:Caller', 'go:func:Core', RelationshipType.CALLS));
+    // prose link: the guide documents CoreFn (Page -> CodeSymbol)
+    g.addRelationship(makeRel('md:page:doc', 'go:func:Core', RelationshipType.DOCUMENTED_BY));
+
+    const result = await handleToolCall('recon_impact', {
+      target: 'CoreFn',
+      direction: 'upstream',
+    }, g);
+
+    // the code dependent IS in the blast radius
+    expect(result).toContain('CallerFn');
+    // the prose page must NOT leak into the blast radius
+    expect(result).not.toContain('Core Architecture Guide');
+  });
+});
+
+describe('recon_map prose type-gate', () => {
+  it('excludes prose from the language counts', async () => {
+    const g = new KnowledgeGraph();
+    g.addNode(makeNode('go:pkg:core', 'core', {
+      type: NodeType.Package, file: '', package: 'core',
+      importPath: 'core', files: [], imports: [],
+    }));
+    g.addNode(makeNode('go:func:Core', 'CoreFn', {
+      file: 'core/core.go', language: Language.Go, package: 'core',
+    }));
+    g.addNode(makeNode('md:page:doc', 'Guide', {
+      type: NodeType.Page, file: 'docs/g.md', language: Language.Markdown, package: 'docs', exported: false,
+    }));
+    g.addNode(makeNode('md:section:doc#h', 'Section H', {
+      type: NodeType.Section, file: 'docs/g.md', language: Language.Markdown, package: 'docs', exported: false,
+    }));
+
+    // explicit nonexistent root → hermetic (no git/tech-stack side effects)
+    const result = await handleToolCall('recon_map', {}, g, '/recon-prose-test-nonexistent');
+
+    // the language breakdown is present and counts code
+    expect(result).toContain('**Languages:**');
+    expect(result).toContain('go: 1');
+    // ...but prose (markdown) is excluded from it
+    expect(result).not.toContain('markdown');
+  });
+});
