@@ -28,6 +28,7 @@ import { getAvailableLanguages } from '../analyzers/tree-sitter/index.js';
 import { carryOverUnchangedTreeSitter } from '../analyzers/tree-sitter/carryover.js';
 import { detectCommunities } from '../graph/community.js';
 import { NodeType, RelationshipType } from '../graph/types.js';
+import { hashContent } from '../utils/hash.js';
 import { ReconWatcher } from '../watcher/watcher.js';
 import type { ProjectDir } from '../watcher/watcher.js';
 import { loadConfig, mergeWithCLI } from '../config/config.js';
@@ -79,8 +80,9 @@ async function ingestProse(
   saveRoot: string,
   ignore: string[],
   repoName?: string,
-): Promise<MarkdownAnalysisResult> {
-  const mdResult = analyzeMarkdown(findMarkdownFiles(walkRoot, ignore));
+): Promise<MarkdownAnalysisResult & { fileHashes: Record<string, string> }> {
+  const files = findMarkdownFiles(walkRoot, ignore);
+  const mdResult = analyzeMarkdown(files);
   for (const node of mdResult.nodes) {
     graph.addNode(node);
   }
@@ -88,7 +90,13 @@ async function ingestProse(
     graph.addRelationship(rel);
   }
   await saveSearchText(saveRoot, mdResult.searchText, repoName);
-  return mdResult;
+
+  // SHA-256 each .md by project-relative path, so the embedding step can skip
+  // re-embedding prose whose file is unchanged (mirrors the tree-sitter hashes).
+  const fileHashes: Record<string, string> = {};
+  for (const f of files) fileHashes[f.path] = hashContent(f.content);
+
+  return { ...mdResult, fileHashes };
 }
 
 // ─── indexProject: index an external directory ──────────────────
@@ -233,6 +241,46 @@ export function embeddingDecision(flag: boolean | undefined): { embed: boolean; 
   return { embed: false, autoDetect: true };
 }
 
+/** One embeddable node: its id, type (for scoped search), source file (for freshness), embedding text. */
+export interface EmbeddingWorkItem {
+  id: string;
+  type: NodeType;
+  file: string;
+  text: string;
+}
+
+/**
+ * SHA-256 incremental freshness for embeddings. Re-embedding is the expensive
+ * step, so split the embeddable nodes into:
+ *   - carryOver: source file's hash is unchanged AND the node already has a vector
+ *                in the previous store → reuse that vector, no model call.
+ *   - reEmbed:   new node, changed file, or no previous vector → must embed.
+ * Pure + exported so the "only changed .md are re-embedded" contract is unit-testable
+ * without loading the embedding model. Reuses the same fileHashes recon already
+ * computes for incremental indexing (now including .md, see ingestProse).
+ */
+export function partitionEmbeddingWork(
+  items: EmbeddingWorkItem[],
+  previousStore: VectorStore | null,
+  previousHashes: Record<string, string> | undefined,
+  currentHashes: Record<string, string>,
+): { carryOver: EmbeddingWorkItem[]; reEmbed: EmbeddingWorkItem[] } {
+  const carryOver: EmbeddingWorkItem[] = [];
+  const reEmbed: EmbeddingWorkItem[] = [];
+
+  for (const item of items) {
+    const prevHash = previousHashes?.[item.file];
+    const fileUnchanged = prevHash !== undefined && prevHash === currentHashes[item.file];
+    if (previousStore && fileUnchanged && previousStore.has(item.id)) {
+      carryOver.push(item);
+    } else {
+      reEmbed.push(item);
+    }
+  }
+
+  return { carryOver, reEmbed };
+}
+
 export async function indexCommand(options: { force?: boolean; repo?: string; embeddings?: boolean }): Promise<void> {
   const startTime = performance.now();
   const projectRoot = findProjectRoot();
@@ -358,7 +406,7 @@ export async function indexCommand(options: { force?: boolean; repo?: string; em
       relationships: graph.relationshipCount,
       indexTimeMs: elapsed,
     },
-    fileHashes: { ...tsitterHashes },
+    fileHashes: { ...tsitterHashes, ...mdResult.fileHashes },
     apiRoutes: crossLangResult.routes.map(r => ({
       method: r.method,
       pattern: r.pattern,
@@ -429,33 +477,52 @@ export async function indexCommand(options: { force?: boolean; repo?: string; em
   if (doEmbeddings) {
     console.log('[recon] Generating embeddings...');
     try {
-      await initEmbedder();
-
-      // Collect embeddable nodes
-      const embeddableNodes: Array<{ id: string; text: string }> = [];
+      // Collect embeddable nodes (code + prose). Prose carries its body via the
+      // searchText snapshot, which is kept OFF the graph node — pass it so the
+      // prose meaning, not a synthetic signature, is what gets embedded.
+      const proseText = mdResult.searchText;
+      const embeddable: EmbeddingWorkItem[] = [];
       for (const node of graph.nodes.values()) {
         if (isEmbeddable(node)) {
-          embeddableNodes.push({
+          embeddable.push({
             id: node.id,
-            text: generateEmbeddingText(node),
+            type: node.type,
+            file: node.file,
+            text: generateEmbeddingText(node, proseText[node.id]),
           });
         }
       }
 
-      if (embeddableNodes.length > 0) {
-        const texts = embeddableNodes.map(n => n.text);
-        const embeddings = await embedBatch(texts);
-        const vectorStore = new VectorStore(DEFAULT_CONFIG.dimensions);
+      // SHA-256 incremental freshness: carry unchanged nodes' vectors forward and
+      // re-embed only changed/new ones (previously EVERY node was re-embedded).
+      const previousStore = options.force ? null : await loadEmbeddings(projectRoot, repoName);
+      const { carryOver, reEmbed } = partitionEmbeddingWork(
+        embeddable, previousStore, previousHashes, meta.fileHashes,
+      );
 
-        for (let i = 0; i < embeddableNodes.length; i++) {
-          vectorStore.add(embeddableNodes[i].id, embeddings[i]);
-        }
-
-        await saveEmbeddings(projectRoot, vectorStore, repoName);
-        console.log(`[recon] Embeddings: ${vectorStore.size} vectors (${DEFAULT_CONFIG.dimensions}d)`);
+      const vectorStore = new VectorStore(DEFAULT_CONFIG.dimensions);
+      for (const item of carryOver) {
+        const vec = previousStore!.get(item.id);
+        if (vec) vectorStore.add(item.id, vec, item.type);
+        else reEmbed.push(item); // defensive: vector vanished → re-embed it
       }
 
-      await disposeEmbedder();
+      if (reEmbed.length > 0) {
+        await initEmbedder();
+        const embeddings = await embedBatch(reEmbed.map(n => n.text));
+        for (let i = 0; i < reEmbed.length; i++) {
+          vectorStore.add(reEmbed[i].id, embeddings[i], reEmbed[i].type);
+        }
+        await disposeEmbedder();
+      }
+
+      if (vectorStore.size > 0) {
+        await saveEmbeddings(projectRoot, vectorStore, repoName);
+        console.log(
+          `[recon] Embeddings: ${vectorStore.size} vectors ` +
+          `(${carryOver.length} reused, ${reEmbed.length} re-embedded, ${DEFAULT_CONFIG.dimensions}d)`,
+        );
+      }
     } catch (err) {
       console.error(`[recon] Embedding failed: ${err instanceof Error ? err.message : String(err)}`);
       console.error('[recon] Continuing without embeddings. Install @huggingface/transformers for semantic search.');
