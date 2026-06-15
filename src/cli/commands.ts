@@ -22,6 +22,7 @@ import { generateEmbeddingText, isEmbeddable } from '../search/text-generator.js
 import { initEmbedder, embedBatch, disposeEmbedder, DEFAULT_CONFIG } from '../search/embedder.js';
 import { analyzeTreeSitter, analyzeTreeSitterParallel } from '../analyzers/tree-sitter/index.js';
 import { analyzeMarkdown, findMarkdownFiles } from '../analyzers/markdown.js';
+import type { MarkdownAnalysisResult } from '../analyzers/markdown.js';
 import { getAvailableLanguages } from '../analyzers/tree-sitter/index.js';
 import { carryOverUnchangedTreeSitter } from '../analyzers/tree-sitter/carryover.js';
 import { detectCommunities } from '../graph/community.js';
@@ -54,6 +55,39 @@ function getGitInfo(cwd: string): { commit: string; branch: string } {
   } catch {
     return { commit: 'unknown', branch: 'unknown' };
   }
+}
+
+// ─── Shared prose ingestion ─────────────────────────────────────
+
+/**
+ * Ingest markdown prose into the graph and persist its searchText snapshot.
+ * Shared by BOTH index paths (indexCommand + indexProject) so secondary repos
+ * get the same Page/Section nodes + search-text.json as the primary one.
+ *
+ * @param walkRoot  directory walked for .md files (the repo being indexed)
+ * @param saveRoot  project root the snapshot is saved under (the MAIN project)
+ * @param repoName  repo subdir for the snapshot (undefined = legacy root)
+ *
+ * Returns the analysis result so each caller logs warnings/counts in its own
+ * stdout/stderr style — indexProject must stay off stdout (it can run under
+ * serve's stdio MCP channel).
+ */
+async function ingestProse(
+  graph: KnowledgeGraph,
+  walkRoot: string,
+  saveRoot: string,
+  ignore: string[],
+  repoName?: string,
+): Promise<MarkdownAnalysisResult> {
+  const mdResult = analyzeMarkdown(findMarkdownFiles(walkRoot, ignore));
+  for (const node of mdResult.nodes) {
+    graph.addNode(node);
+  }
+  for (const rel of mdResult.relationships) {
+    graph.addRelationship(rel);
+  }
+  await saveSearchText(saveRoot, mdResult.searchText, repoName);
+  return mdResult;
 }
 
 // ─── indexProject: index an external directory ──────────────────
@@ -122,6 +156,19 @@ export async function indexProject(
   for (const rel of crossLangResult.result.relationships) {
     graph.addRelationship(rel);
   }
+
+  // Markdown / prose analysis — same ingest as the primary path (indexCommand),
+  // so secondary repos get Page/Section nodes + a search-text.json snapshot too.
+  // Saved under the MAIN project's repo dir; console.error (never stdout) since
+  // indexProject can run inside serve's stdio auto-index.
+  const mdResult = await ingestProse(graph, resolvedDir, mainProjectRoot, extConfig.ignore, name);
+  if (mdResult.warnings.length > 0) {
+    console.error(`[recon] ${mdResult.warnings.length} markdown file(s) skipped due to errors:`);
+    for (const w of mdResult.warnings) {
+      console.error(`  ${w.file}: ${w.reason}`);
+    }
+  }
+  console.error(`[recon] Prose: ${mdResult.nodes.length} nodes, ${mdResult.relationships.length} edges`);
 
   // Git info
   const git = getGitInfo(resolvedDir);
@@ -279,16 +326,17 @@ export async function indexCommand(options: { force?: boolean; repo?: string; em
 
   // Markdown / prose analysis: ingest .md as Page/Section nodes (tree-sitter
   // rejects .md, so the analyzer has its own walker). The body text is kept OFF
-  // the graph node and carried in the searchText snapshot persisted below.
+  // the graph node and carried in the searchText snapshot persisted by ingestProse
+  // (shared with indexProject so secondary repos ingest the same way).
   console.log('[recon] Analyzing markdown prose...');
-  const mdResult = analyzeMarkdown(findMarkdownFiles(projectRoot, config.ignore));
-  for (const node of mdResult.nodes) {
-    graph.addNode(node);
-  }
-  for (const rel of mdResult.relationships) {
-    graph.addRelationship(rel);
-  }
+  const mdResult = await ingestProse(graph, projectRoot, projectRoot, config.ignore, repoName);
   console.log(`[recon] Prose: ${mdResult.nodes.length} nodes, ${mdResult.relationships.length} edges`);
+  if (mdResult.warnings.length > 0) {
+    console.log(`[recon] ${mdResult.warnings.length} markdown file(s) skipped due to errors:`);
+    for (const w of mdResult.warnings) {
+      console.log(`  ${w.file}: ${w.reason}`);
+    }
+  }
 
   // Git info
   const git = getGitInfo(projectRoot);
@@ -336,10 +384,6 @@ export async function indexCommand(options: { force?: boolean; repo?: string; em
   }
 
   await saveIndex(projectRoot, graph, meta, repoName);
-
-  // Persist the prose searchText snapshot alongside graph.json (body-OFF the
-  // node; this snapshot is the lexical input for serve — see ADR 0002).
-  await saveSearchText(projectRoot, mdResult.searchText, repoName);
 
   // Also save to SQLite store
   const store = new SqliteStore(projectRoot);
