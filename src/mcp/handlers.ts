@@ -14,7 +14,7 @@ import type { Node, Relationship } from '../graph/types.js';
 import { VectorStore } from '../search/vector-store.js';
 import { executeFind, formatFindResults } from './find.js';
 import type { FindOptions } from './find.js';
-import { runRule, formatRuleResult } from './rules.js';
+import { runRule, formatRuleResult, isProseType } from './rules.js';
 import type { RuleName } from './rules.js';
 import { symbolNotFound, ambiguousSymbol, invalidParameter, emptyGraph } from './errors.js';
 import { planRename, formatRenameResult } from './rename.js';
@@ -272,6 +272,7 @@ function handleMap(
   const langCounts = new Map<string, number>();
   for (const node of graph.nodes.values()) {
     if (node.type === NodeType.Package || node.type === NodeType.File) continue;
+    if (isProseType(node.type)) continue; // prose excluded from language counts
     const lang = node.language || 'unknown';
     langCounts.set(lang, (langCounts.get(lang) || 0) + 1);
   }
@@ -573,6 +574,7 @@ function handleImpact(
 
         const neighbor = graph.getNode(neighborId);
         if (!neighbor) continue;
+        if (isProseType(neighbor.type)) continue; // prose never enters the blast radius
 
         visited.add(neighborId);
         nextFrontier.push(neighborId);

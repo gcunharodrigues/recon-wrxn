@@ -15,6 +15,7 @@ import {
   runRule,
   findCircularDeps,
   formatRuleResult,
+  isProseType,
 } from '../../src/mcp/rules.js';
 import type { RuleResult } from '../../src/mcp/rules.js';
 
@@ -460,5 +461,87 @@ describe('formatRuleResult', () => {
     const result = runRule(g, 'dead_code') as RuleResult;
     const text = formatRuleResult(result);
     expect(text).toContain('DeadFn');
+  });
+});
+
+// ─── prose type-gate (recon-prose-analyzer-05) ──────────────────
+
+describe('isProseType (shared prose predicate)', () => {
+  it('classifies Page and Section as prose', () => {
+    expect(isProseType(NodeType.Page)).toBe(true);
+    expect(isProseType(NodeType.Section)).toBe(true);
+  });
+
+  it('classifies code/structure types as non-prose', () => {
+    expect(isProseType(NodeType.Function)).toBe(false);
+    expect(isProseType(NodeType.Class)).toBe(false);
+    expect(isProseType(NodeType.File)).toBe(false);
+    expect(isProseType(NodeType.Package)).toBe(false);
+    expect(isProseType(NodeType.Module)).toBe(false);
+  });
+});
+
+describe('dead_code prose type-gate', () => {
+  // Defense-in-depth: prose is exported:false at the data layer (slice 01),
+  // but the gate must hold INDEPENDENTLY even if a prose node were exported:true.
+  it('excludes prose Page/Section nodes even when exported', () => {
+    const g = new KnowledgeGraph();
+    g.addNode(makeNode('md:page:doc', 'README', {
+      type: NodeType.Page, exported: true, file: 'README.md', language: Language.Markdown,
+    }));
+    g.addNode(makeNode('md:section:doc#intro', 'Introduction', {
+      type: NodeType.Section, exported: true, file: 'README.md', language: Language.Markdown,
+    }));
+    g.addNode(makeNode('fn:real', 'RealExport', { exported: true, file: 'src/a.ts' }));
+
+    const result = runRule(g, 'dead_code') as RuleResult;
+    const names = result.items.map(i => i.name);
+    expect(names).not.toContain('README');
+    expect(names).not.toContain('Introduction');
+    // a real exported symbol with no callers is still flagged
+    expect(names).toContain('RealExport');
+  });
+});
+
+describe('unused_exports prose type-gate', () => {
+  it('excludes prose Page/Section nodes even when exported', () => {
+    const g = new KnowledgeGraph();
+    g.addNode(makeNode('md:page:doc', 'README', {
+      type: NodeType.Page, exported: true, file: 'README.md', language: Language.Markdown,
+    }));
+    g.addNode(makeNode('md:section:doc#intro', 'Introduction', {
+      type: NodeType.Section, exported: true, file: 'README.md', language: Language.Markdown,
+    }));
+
+    const result = runRule(g, 'unused_exports') as RuleResult;
+    const names = result.items.map(i => i.name);
+    expect(names).not.toContain('README');
+    expect(names).not.toContain('Introduction');
+  });
+});
+
+describe('out-of-scope rules keep their prose behavior (locked)', () => {
+  it('large_files STILL counts prose nodes (accepted, not gated)', () => {
+    const g = new KnowledgeGraph();
+    const md = 'docs/big.md';
+    // 31 prose sections in one .md file — above the default threshold of 30
+    for (let i = 0; i < 31; i++) {
+      g.addNode(makeNode(`md:section:${i}`, `Heading${i}`, {
+        type: NodeType.Section, file: md, exported: false, language: Language.Markdown,
+      }));
+    }
+
+    const result = runRule(g, 'large_files') as RuleResult;
+    expect(result.items.map(i => i.file)).toContain(md);
+  });
+
+  it('orphans does NOT flag a prose Page (only File-type nodes)', () => {
+    const g = new KnowledgeGraph();
+    g.addNode(makeNode('md:page:lonely', 'Lonely Page', {
+      type: NodeType.Page, file: 'docs/lonely.md', exported: false, language: Language.Markdown,
+    }));
+
+    const result = runRule(g, 'orphans') as RuleResult;
+    expect(result.items.map(i => i.name)).not.toContain('Lonely Page');
   });
 });
