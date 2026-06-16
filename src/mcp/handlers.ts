@@ -12,8 +12,9 @@ import { KnowledgeGraph } from '../graph/graph.js';
 import { NodeType, RelationshipType, Language } from '../graph/types.js';
 import type { Node, Relationship } from '../graph/types.js';
 import { VectorStore } from '../search/vector-store.js';
-import { executeFind, formatFindResults } from './find.js';
+import { executeFind, executeFindHybrid, formatFindResults } from './find.js';
 import type { FindOptions } from './find.js';
+import { isEmbedderReady, embedText } from '../search/embedder.js';
 import { runRule, formatRuleResult, isProseType } from './rules.js';
 import type { RuleName } from './rules.js';
 import { symbolNotFound, ambiguousSymbol, invalidParameter, emptyGraph } from './errors.js';
@@ -221,7 +222,7 @@ export async function handleToolCall(
       return handleMap(a, graph, projectRoot);
 
     case 'recon_find':
-      return handleFind(a, graph);
+      return await handleFind(a, graph, vectorStore);
 
     case 'recon_explain':
       return handleExplain(a, graph);
@@ -339,10 +340,11 @@ function handleMap(
 
 // ─── recon_find ───────────────────────────────────────────────
 
-function handleFind(
+async function handleFind(
   args: Record<string, unknown>,
   graph: KnowledgeGraph,
-): string {
+  vectorStore?: VectorStore | null,
+): Promise<string> {
   const query = args?.query as string;
   if (!query) {
     return invalidParameter('query', '', ['<search term>']).toJSON();
@@ -352,8 +354,14 @@ function handleFind(
   if (args?.type) options.type = args.type as NodeType;
   if (args?.limit) options.limit = args.limit as number;
 
+  // Hybrid retrieval (BM25 ⊕ vector via RRF) on the fulltext path when embeddings
+  // are loaded AND the query embedder is ready; otherwise executeFindHybrid falls
+  // back to pure BM25. Embeddings stay off the optional-dependency hot path: we
+  // only pass embedText once the singleton is initialized.
+  const embedQuery = vectorStore && isEmbedderReady() ? embedText : null;
+
   // Apply language and package filters via post-filtering
-  let results = executeFind(graph, query, options);
+  let results = await executeFindHybrid(graph, query, options, vectorStore, embedQuery);
 
   // Fallback: if exact search found nothing, retry with wildcard pattern
   if (results.length === 0 && !query.includes('*') && !query.includes('?')) {

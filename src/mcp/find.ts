@@ -7,6 +7,8 @@
 
 import type { KnowledgeGraph, Node } from '../graph/index.js';
 import { NodeType, RelationshipType } from '../graph/index.js';
+import { mergeWithRRF } from '../search/hybrid-search.js';
+import type { VectorStore } from '../search/vector-store.js';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -39,6 +41,13 @@ export interface FindOptions {
 export interface FulltextRanker {
   search(query: string, limit?: number): Array<{ nodeId: string; score: number }>;
 }
+
+/**
+ * Embeds a query string into a vector. Injected by the serve path (transformers.js
+ * via embedder.ts), so find.ts stays free of the optional embedding dependency and
+ * the hybrid path is unit-testable with a fake embedder.
+ */
+export type EmbedQuery = (query: string) => Promise<Float32Array>;
 
 // Process-default ranker. serveCommand installs the BM25 index here so the live
 // recon_find path (handlers → executeFind, 3 args) ranks prose body without any
@@ -402,6 +411,69 @@ export function executeFind(
     case 'fulltext':
       return searchFulltext(graph, query, options, ranker);
   }
+}
+
+/**
+ * Hybrid retrieval: BM25 ⊕ node-type-scoped vector search, fused via Reciprocal
+ * Rank Fusion (recon-prose-analyzer-04). Enhances ONLY the fulltext strategy; every
+ * other strategy and every missing-input case delegates to the sync `executeFind`
+ * so behavior is unchanged when embeddings are absent.
+ *
+ * Fallback to pure BM25 (the built-in fallback the dilution gate relies on) when:
+ *  - the query is not fulltext (exact/pattern/structural code retrieval), or
+ *  - there is no ranker, no vector store, an empty store, or no query embedder, or
+ *  - embedding the query throws (the embedding layer never hard-fails retrieval).
+ *
+ * Otherwise: rank BM25 over a wide candidate pool, embed the query, search the
+ * vector store SCOPED to prose node-types (Page/Section — so code keeps its BM25
+ * rank and prose vectors don't dilute code vectors, decision 27), fuse the two
+ * ranked lists with RRF, map the fused ids back to graph nodes, then apply
+ * type/limit. `ranker.search` returns `{nodeId,score}[]`, structurally a
+ * `BM25Result`, so it feeds `mergeWithRRF` directly.
+ */
+export async function executeFindHybrid(
+  graph: KnowledgeGraph,
+  query: string,
+  options: FindOptions | undefined,
+  vectorStore: VectorStore | null | undefined,
+  embedQuery: EmbedQuery | null,
+  ranker: FulltextRanker | null = defaultRanker,
+): Promise<FindResult[]> {
+  // Hybrid only enhances fulltext — everything else is the sync path verbatim.
+  if (classifyQuery(query) !== 'fulltext') {
+    return executeFind(graph, query, options, ranker);
+  }
+
+  // Built-in fallback: any missing hybrid input → pure BM25 (current behavior).
+  if (!ranker || !vectorStore || vectorStore.size === 0 || !embedQuery) {
+    return executeFind(graph, query, options, ranker);
+  }
+
+  // Wide candidate pool before the final limit, so fusion has room to re-rank.
+  const pool = Math.max((options?.limit ?? 0) * 4, 50);
+
+  const bm25Results = ranker.search(query, pool);
+
+  let queryEmbedding: Float32Array;
+  try {
+    queryEmbedding = await embedQuery(query);
+  } catch {
+    // The embedding layer must never hard-fail retrieval — fall back to BM25.
+    return executeFind(graph, query, options, ranker);
+  }
+
+  const semanticResults = vectorStore.search(queryEmbedding, pool, {
+    nodeType: [NodeType.Page, NodeType.Section],
+  });
+
+  const fused = mergeWithRRF(bm25Results, semanticResults, pool);
+
+  const results: FindResult[] = [];
+  for (const { nodeId } of fused) {
+    const node = graph.getNode(nodeId);
+    if (node) results.push(buildResult(node, graph));
+  }
+  return applyOptions(results, options);
 }
 
 // ─── Formatting ──────────────────────────────────────────────────

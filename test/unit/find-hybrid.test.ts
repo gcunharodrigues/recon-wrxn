@@ -12,9 +12,49 @@
  *      layer is absent/empty/throwing. Asserted with an INJECTED fake embedder —
  *      transformers.js does not run under vitest, so the embedder is a parameter.
  */
-import { describe, it, expect } from 'vitest';
-import { classifyQuery } from '../../src/mcp/find.js';
+import { describe, it, expect, afterEach } from 'vitest';
+import { KnowledgeGraph } from '../../src/graph/graph.js';
+import { NodeType, Language } from '../../src/graph/types.js';
+import type { Node } from '../../src/graph/types.js';
+import {
+  classifyQuery,
+  executeFind,
+  executeFindHybrid,
+  setFulltextRanker,
+} from '../../src/mcp/find.js';
 import type { QueryStrategy } from '../../src/mcp/find.js';
+import { BM25Index } from '../../src/search/bm25.js';
+import { VectorStore } from '../../src/search/vector-store.js';
+
+// ─── Fixture builders ────────────────────────────────────────────
+
+function page(id: string, name: string, file: string): Node {
+  return {
+    id, type: NodeType.Page, name, file,
+    startLine: 1, endLine: 1, language: Language.Markdown, package: 'docs', exported: false,
+  };
+}
+
+function code(id: string, name: string, file: string, overrides?: Partial<Node>): Node {
+  return {
+    id, type: NodeType.Function, name, file,
+    startLine: 1, endLine: 5, language: Language.TypeScript, package: 'src', exported: true,
+    ...overrides,
+  };
+}
+
+/** A unit vector with a single hot dimension — a controlled, planted embedding. */
+function unitVec(dims: number, hot = 0): Float32Array {
+  const v = new Float32Array(dims);
+  v[hot] = 1;
+  return v;
+}
+
+/**
+ * A fake query embedder: ignores the query and returns a planted vector. The
+ * fusion arm is what we test here, not transformers.js (which can't run in vitest).
+ */
+const fakeEmbed = (vec: Float32Array) => async (_q: string): Promise<Float32Array> => vec;
 
 // ─── (B) Classifier: interrogative-question demotion ─────────────
 
@@ -42,5 +82,198 @@ describe('classifyQuery — interrogative-question demotion (recon-prose-analyze
 
   it('leaves a non-question structural query unchanged ("orphan dead code")', () => {
     expect(classifyQuery('orphan dead code')).toBe<QueryStrategy>('structural');
+  });
+});
+
+// ─── (A) Hybrid fusion — the planted case (fake embedder) ────────
+
+describe('executeFindHybrid — RRF fusion floats a vector-strong page BM25 misses', () => {
+  // The "right" page has NO lexical overlap with the query (BM25 misses it) but
+  // its planted vector aligns with the query embedding. A lexically-rich decoy
+  // wins on BM25. Fusion must surface the correct page into the top results.
+  const QUERY = 'semantic retrieval concept'; // 3 words, classifies fulltext
+
+  function buildGraph(): { graph: KnowledgeGraph; searchText: Record<string, string> } {
+    const graph = new KnowledgeGraph();
+    const target = page('md:page:target.md', 'Vector Target', 'docs/target.md');
+    const decoy = page('md:page:decoy.md', 'Lexical Decoy', 'docs/decoy.md');
+    graph.addNode(target);
+    graph.addNode(decoy);
+    graph.addNode(code('ts:func:noise', 'noise', 'src/noise.ts'));
+    const searchText: Record<string, string> = {
+      // target: zero overlap with the query terms → BM25 score 0, absent from BM25.
+      [target.id]: 'an orthogonal body about widgets and gadgets',
+      // decoy: full lexical overlap → BM25 ranks it top.
+      [decoy.id]: 'semantic retrieval concept overview',
+    };
+    return { graph, searchText };
+  }
+
+  it('BM25-alone misses the vector-strong target but fusion lands it top-5', async () => {
+    const { graph, searchText } = buildGraph();
+    const ranker = BM25Index.buildFromGraph(graph, searchText);
+
+    // Plant vectors: target aligned with the query embedding, decoy orthogonal.
+    const store = new VectorStore(3);
+    store.add('md:page:target.md', unitVec(3, 0), NodeType.Page);
+    store.add('md:page:decoy.md', unitVec(3, 1), NodeType.Page);
+
+    // BM25-alone: lexical decoy present, the (correct) target absent.
+    const bm25 = executeFind(graph, QUERY, { limit: 5 }, ranker).map(r => r.file);
+    expect(bm25).toContain('docs/decoy.md');
+    expect(bm25).not.toContain('docs/target.md');
+
+    // Hybrid: the aligned vector floats the target into the results via RRF.
+    const hybrid = (
+      await executeFindHybrid(graph, QUERY, { limit: 5 }, store, fakeEmbed(unitVec(3, 0)), ranker)
+    ).map(r => r.file);
+    expect(hybrid).toContain('docs/target.md'); // surfaced only because of the vector arm
+    expect(hybrid).toContain('docs/decoy.md');   // BM25 arm still contributes
+  });
+});
+
+// ─── (A) Prose-scoping — the semantic arm never returns code ─────
+
+describe('executeFindHybrid — vector search is scoped to Page/Section', () => {
+  const QUERY = 'obscure unrelated lookup'; // fulltext, matches nothing lexically
+
+  it('a code node with a perfectly-aligned vector does NOT surface (prose-scoped)', async () => {
+    const graph = new KnowledgeGraph();
+    graph.addNode(code('code:thing', 'CodeThing', 'src/thing.ts'));
+    graph.addNode(page('md:page:prose.md', 'Prose Page', 'docs/prose.md'));
+    const ranker = BM25Index.buildFromGraph(graph, { 'md:page:prose.md': 'an unrelated body' });
+
+    const store = new VectorStore(3);
+    // BOTH aligned with the query embedding — only the prose one may surface.
+    store.add('code:thing', unitVec(3, 0), NodeType.Function);
+    store.add('md:page:prose.md', unitVec(3, 0), NodeType.Page);
+
+    const ids = (
+      await executeFindHybrid(graph, QUERY, { limit: 5 }, store, fakeEmbed(unitVec(3, 0)), ranker)
+    ).map(r => r.id);
+
+    expect(ids).toContain('md:page:prose.md'); // prose vector surfaces
+    expect(ids).not.toContain('code:thing');   // code vector excluded by the node-type scope
+  });
+});
+
+// ─── (A) Fallback contract — never hard-fail on the embedding layer ──
+
+describe('executeFindHybrid — falls back to pure BM25', () => {
+  const QUERY = 'semantic retrieval concept';
+
+  function setup() {
+    const graph = new KnowledgeGraph();
+    const p = page('md:page:p.md', 'Concept Page', 'docs/p.md');
+    graph.addNode(p);
+    graph.addNode(code('ts:func:noise', 'noise', 'src/noise.ts'));
+    const ranker = BM25Index.buildFromGraph(graph, { [p.id]: 'semantic retrieval concept body' });
+    const store = new VectorStore(3);
+    store.add(p.id, unitVec(3, 0), NodeType.Page);
+    return { graph, ranker, store };
+  }
+
+  it('vectorStore=null → identical to sync executeFind (pure BM25)', async () => {
+    const { graph, ranker } = setup();
+    const sync = executeFind(graph, QUERY, { limit: 5 }, ranker);
+    const hybrid = await executeFindHybrid(graph, QUERY, { limit: 5 }, null, fakeEmbed(unitVec(3, 0)), ranker);
+    expect(hybrid).toEqual(sync);
+  });
+
+  it('empty VectorStore → identical to sync executeFind', async () => {
+    const { graph, ranker } = setup();
+    const sync = executeFind(graph, QUERY, { limit: 5 }, ranker);
+    const empty = new VectorStore(3);
+    const hybrid = await executeFindHybrid(graph, QUERY, { limit: 5 }, empty, fakeEmbed(unitVec(3, 0)), ranker);
+    expect(hybrid).toEqual(sync);
+  });
+
+  it('embedQuery that throws → falls back to BM25, never throws', async () => {
+    const { graph, ranker, store } = setup();
+    const sync = executeFind(graph, QUERY, { limit: 5 }, ranker);
+    const throwing = async (_q: string): Promise<Float32Array> => { throw new Error('embed boom'); };
+    // Must resolve (not reject) and equal the pure-BM25 result.
+    const hybrid = await executeFindHybrid(graph, QUERY, { limit: 5 }, store, throwing, ranker);
+    expect(hybrid).toEqual(sync);
+  });
+
+  it('embedQuery=null → identical to sync executeFind', async () => {
+    const { graph, ranker, store } = setup();
+    const sync = executeFind(graph, QUERY, { limit: 5 }, ranker);
+    const hybrid = await executeFindHybrid(graph, QUERY, { limit: 5 }, store, null, ranker);
+    expect(hybrid).toEqual(sync);
+  });
+
+  it('no ranker → delegates to the built-in naive scan (current behavior)', async () => {
+    const { graph, store } = setup();
+    const noRanker = executeFind(graph, QUERY, { limit: 5 }, null);
+    const hybrid = await executeFindHybrid(graph, QUERY, { limit: 5 }, store, fakeEmbed(unitVec(3, 0)), null);
+    expect(hybrid).toEqual(noRanker);
+  });
+});
+
+// ─── (A) Non-fulltext untouched — code retrieval not regressed ──
+
+describe('executeFindHybrid — exact/structural delegate to sync executeFind', () => {
+  function buildCodeGraph(): KnowledgeGraph {
+    const g = new KnowledgeGraph();
+    g.addNode(code('go:func:AuthHandler', 'AuthHandler', 'internal/auth/handler.go', { language: Language.Go, package: 'internal/auth' }));
+    g.addNode(code('go:func:LoginHandler', 'LoginHandler', 'internal/auth/login.go', { language: Language.Go, package: 'internal/auth' }));
+    g.addNode(code('go:func:parseToken', 'parseToken', 'internal/jwt/parse.go', { language: Language.Go, package: 'internal/jwt', exported: false }));
+    return g;
+  }
+
+  it('an exact query returns exactly what sync executeFind returns (store + embedder present)', async () => {
+    const g = buildCodeGraph();
+    const ranker = BM25Index.buildFromGraph(g);
+    const store = new VectorStore(3);
+    store.add('go:func:AuthHandler', unitVec(3, 0), NodeType.Function);
+
+    const hybrid = await executeFindHybrid(g, 'AuthHandler', undefined, store, fakeEmbed(unitVec(3, 0)), ranker);
+    expect(hybrid).toEqual(executeFind(g, 'AuthHandler', undefined, ranker));
+  });
+
+  it('a structural query returns exactly what sync executeFind returns', async () => {
+    const g = buildCodeGraph();
+    const ranker = BM25Index.buildFromGraph(g);
+    const store = new VectorStore(3);
+    store.add('go:func:AuthHandler', unitVec(3, 0), NodeType.Function);
+
+    const q = 'exported functions with no callers';
+    const hybrid = await executeFindHybrid(g, q, undefined, store, fakeEmbed(unitVec(3, 0)), ranker);
+    expect(hybrid).toEqual(executeFind(g, q, undefined, ranker));
+  });
+});
+
+// ─── (A) Handler wiring — recon_find forwards vectorStore + BM25 fallback ──
+
+describe('recon_find handler — vectorStore forwarding + BM25 fallback (AC wiring)', () => {
+  afterEach(() => setFulltextRanker(null));
+
+  it('a conceptual query surfaces the documenting page; a present store with no ready embedder falls back to BM25 (no throw)', async () => {
+    const { handleToolCall } = await import('../../src/mcp/handlers.js');
+
+    const graph = new KnowledgeGraph();
+    const p = page('md:page:doc-sync.md', 'Doc Sync Pattern', 'docs/doc-sync.md');
+    graph.addNode(p);
+    graph.addNode(code('ts:func:syncJSDoc', 'syncJSDoc', 'src/sync.ts'));
+    setFulltextRanker(BM25Index.buildFromGraph(graph, {
+      [p.id]: 'Doc Sync Pattern — the documentation synchronization pattern keeps prose aligned with the code it documents',
+    }));
+
+    // A vector store is present, but the embedder singleton is NOT initialized in
+    // vitest → handleFind builds embedQuery=null → executeFindHybrid falls back to
+    // BM25 with no hard failure. Proves the last-hop wiring + the fallback AC.
+    const store = new VectorStore(384);
+    store.add(p.id, unitVec(384, 0), NodeType.Page);
+
+    const out = await handleToolCall(
+      'recon_find',
+      { query: 'what is the documentation synchronization pattern' }, // interrogative → fulltext
+      graph,
+      undefined,
+      store,
+    );
+    expect(out).toContain('Doc Sync Pattern');
   });
 });
