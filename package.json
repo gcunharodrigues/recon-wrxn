@@ -1,6 +1,6 @@
 {
   "name": "recon-wrxn",
-  "version": "6.0.0-wrxn.1",
+  "version": "6.0.0-wrxn.2",
   "description": "Lightweight code intelligence engine for AI agents. Dependency mapping, blast radius analysis, and call graph via MCP.",
   "type": "module",
   "main": "dist/cli/index.js",

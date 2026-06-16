@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [6.0.0-wrxn.2] - 2026-06-16
+
+### Added
+- **Multi-format source indexing** — non-markdown files become searchable `Source` nodes: text-native (`.html`/`.txt`/`.yaml`/`.yml`/`.json`) carry a key+value `searchText` snapshot; binary (`.pdf`/`.docx`/`.pptx`/`.xlsx`) get a minimal path-only node. `exported:false` and type-gated like prose — excluded from `recon_rules`/`recon_impact`/`recon_map`.
+- **Provenance to raw sources** — a distilled wiki page's `derived_from: <path>` resolves to its raw `Source` node, producing a `DOCUMENTED_BY` edge shown both directions by `recon_explain`; `recon_impact` does not traverse it.
+- **Optional `maxFileSize` config** (`.recon-wrxn.json`) — an OOM escape hatch; invalid/non-positive values coerce to unlimited with a warning.
+
+### Changed
+- **Removed the hard 1 MB file-size cap** across all walkers — default is now unlimited (ReDoS protection is unchanged: bounded by the per-token citation cap, not file size).
+- **Walker selectivity** — skip machine-generated lockfiles (`package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`) and transient dump dirs (`.playwright-mcp`); the ignore set is consolidated to a single source of truth (`src/analyzers/ignore.ts`) shared by the markdown, source, and code walkers.
+
+### Fixed
+- Multi-document YAML (`---`-separated, e.g. k8s/helm manifests) is now indexed instead of skipped as malformed; empty `.json`/`.yaml` handled consistently; key+value serialization is depth-bounded.
+
 ## [5.4.2] - 2026-03-24
 
 ### Added
