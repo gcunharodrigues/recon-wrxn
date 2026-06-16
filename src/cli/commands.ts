@@ -853,7 +853,18 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
     for (const dir of projects) {
       watchDirs.push({ dir: resolve(dir), repoName: basename(resolve(dir)).toLowerCase() });
     }
-    const watcher = new ReconWatcher(graph, watchDirs, config.watchDebounce, config.ignore, projectRoot, config.maxFileSize);
+    // onChange: the live BM25 ranker is built ONCE above, so recon_find goes
+    // stale after a watched `.md`/source edit until restart. Rebuild it from the
+    // SAME in-place-mutated graph + the reloaded searchText snapshot whenever the
+    // watcher applies a file event — no restart. The event debounce throttles how
+    // often a full rebuild runs. (Vector/embedding freshness is slice C.)
+    const watcher = new ReconWatcher(
+      graph, watchDirs, config.watchDebounce, config.ignore, projectRoot, config.maxFileSize, undefined,
+      async () => {
+        const st = await loadSearchText(projectRoot, repoName);
+        setFulltextRanker(BM25Index.buildFromGraph(graph, st ?? undefined));
+      },
+    );
     watcher.start();
   }
 

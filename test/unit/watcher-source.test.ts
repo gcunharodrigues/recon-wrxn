@@ -16,6 +16,7 @@ import { analyzeSource, findSourceFiles } from '../../src/analyzers/source.js';
 import { KnowledgeGraph } from '../../src/graph/graph.js';
 import { saveSearchText, loadSearchText } from '../../src/storage/store.js';
 import { NodeType } from '../../src/graph/types.js';
+import type { SqliteStore } from '../../src/storage/sqlite.js';
 
 let root: string;
 let graph: KnowledgeGraph;
@@ -137,5 +138,21 @@ describe('watcher Source unlink', () => {
     const after = (await loadSearchText(root))!;
     expect(after['source:docs/a.html']).toBeUndefined();
     expect(after['source:docs/keep.txt']).toBeDefined();
+  });
+
+  it('prunes the SQLite store on a source unlink (slice B fix 1 — symmetric)', async () => {
+    // The source unlink branch used to return BEFORE the SQLite persist block,
+    // leaving deleted nodes in SQLite. It must now call removeNodesByFile.
+    const removed: string[] = [];
+    const store = {
+      removeNodesByFile: (f: string) => { removed.push(f); return 0; },
+      insertNodes: () => {},
+      insertRelationships: () => {},
+    } as unknown as SqliteStore;
+    const w = new ReconWatcher(graph, [{ dir: root, repoName: 'proj' }], 50, [], root, Infinity, store);
+    await (w as unknown as { processFile(a: string, r: string, e: string): Promise<void> })
+      .processFile(join(root, 'docs/a.html'), 'proj', 'unlink');
+    w.stop();
+    expect(removed).toContain('docs/a.html');
   });
 });

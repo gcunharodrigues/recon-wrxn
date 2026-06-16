@@ -18,6 +18,7 @@ import { NodeType, RelationshipType } from '../graph/types.js';
 import { extractFromFile } from '../analyzers/tree-sitter/extractor.js';
 import { getLanguageForFile, isLanguageAvailable } from '../analyzers/tree-sitter/parser.js';
 import { analyzeMarkdown } from '../analyzers/markdown.js';
+import { resolveDocEdges } from '../analyzers/doc-edges.js';
 import { analyzeSource, BINARY_SOURCE_EXTENSIONS, SOURCE_EXTENSIONS } from '../analyzers/source.js';
 import type { SourceFile } from '../analyzers/source.js';
 import { saveIndex, loadSearchText, saveSearchText } from '../storage/store.js';
@@ -127,6 +128,7 @@ export class ReconWatcher {
     private projectRoot?: string,
     private maxFileSize: number = Infinity,
     private store?: SqliteStore,
+    private onChange?: () => void | Promise<void>,
   ) {}
 
   /**
@@ -284,9 +286,14 @@ export class ReconWatcher {
         if (MARKDOWN_EXTENSIONS.has(ext)) {
           // Prune the prose nodes AND the file's search-text.json entries.
           await this.surgicalUpdateMarkdown(absPath, relPath, 'unlink');
+          // Symmetric with the generic branch below: the .md/source branches used
+          // to return before the SQLite persist block, leaving deleted nodes in
+          // the store. Prune SQLite here too (P1.5-B).
+          if (this.store) this.store.removeNodesByFile(relPath);
         } else if (SOURCE_EXTENSIONS.has(ext)) {
           // Prune the Source node + any search-text.json entry (text-native).
           await this.surgicalUpdateSource(absPath, relPath, 'unlink');
+          if (this.store) this.store.removeNodesByFile(relPath);
         } else {
           const removed = this.graph.removeNodesByFile(relPath);
           if (removed > 0) {
@@ -296,6 +303,9 @@ export class ReconWatcher {
             this.store.removeNodesByFile(relPath);
           }
         }
+        // Live-retrieval refresh: notify after the unlink is applied (the early
+        // exit path). Guarded so a bad callback can't crash the watcher.
+        await this.fireOnChange();
         return;
       }
 
@@ -331,6 +341,11 @@ export class ReconWatcher {
       };
 
       this.maybeAutoSave();
+
+      // Live-retrieval refresh: notify after the add/change work is applied so
+      // serve can rebuild stale derived indexes (the BM25 ranker) without a
+      // restart. Guarded so a bad callback can't crash the watcher.
+      await this.fireOnChange();
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       console.error(`[recon:watch] Error processing ${absPath}: ${msg}`);
@@ -349,6 +364,21 @@ export class ReconWatcher {
         const next = this.pendingQueue.shift()!;
         this.processFile(next.absPath, next.repoName, 'change');
       }
+    }
+  }
+
+  /**
+   * Notify the optional onChange callback that a file event was applied. The
+   * watcher is a long-lived process, so a throwing callback (e.g. a failed BM25
+   * rebuild) must never crash it — swallow + log and continue.
+   */
+  private async fireOnChange(): Promise<void> {
+    if (!this.onChange) return;
+    try {
+      await this.onChange();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[recon:watch] onChange callback failed: ${msg}`);
     }
   }
 
@@ -603,6 +633,16 @@ export class ReconWatcher {
       const result = analyzeMarkdown([{ path: relPath, content }]);
       for (const node of result.nodes) this.graph.addNode(node);
       for (const rel of result.relationships) this.graph.addRelationship(rel);
+      // Regenerate doc→code DOCUMENTED_BY edges for THIS page's citations.
+      // resolveDocEdges is otherwise only run at index time (commands.ts ingestProse);
+      // without this, a live `.md` edit re-adds the Page/Section nodes but loses
+      // their citations. The page's old DOCUMENTED_BY edges were already dropped
+      // with its nodes by removeNodesByFile above, so re-resolving from the live
+      // graph regenerates them cleanly (add/change only — the unlink path skips
+      // this block, which is correct: a deleted page documents nothing).
+      for (const edge of resolveDocEdges(this.graph, result.citations)) {
+        this.graph.addRelationship(edge);
+      }
       freshSearchText = result.searchText;
     }
 

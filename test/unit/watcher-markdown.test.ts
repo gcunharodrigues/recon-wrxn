@@ -21,7 +21,9 @@ import { ReconWatcher } from '../../src/watcher/watcher.js';
 import { analyzeMarkdown, findMarkdownFiles } from '../../src/analyzers/markdown.js';
 import { KnowledgeGraph } from '../../src/graph/graph.js';
 import { saveSearchText, loadSearchText } from '../../src/storage/store.js';
-import { NodeType } from '../../src/graph/types.js';
+import { NodeType, RelationshipType, Language } from '../../src/graph/types.js';
+import { BM25Index } from '../../src/search/bm25.js';
+import type { SqliteStore } from '../../src/storage/sqlite.js';
 
 const A_ORIGINAL = '# Alpha\nAlpha body original.\n\n## Section One\nSection one body.\n';
 const A_UPDATED = '# Alpha\nAlpha body UPDATED.\n\n## Section Two\nBrand new section.\n';
@@ -41,6 +43,22 @@ function fire(rel: string, event: 'add' | 'change' | 'unlink'): Promise<void> {
 }
 
 const nodesOf = (file: string) => [...graph.nodes.values()].filter((n) => n.file === file);
+
+/** Drive processFile on a caller-supplied watcher (for store/onChange variants). */
+const fireOn = (w: ReconWatcher, rel: string, event: string): Promise<void> =>
+  (w as unknown as { processFile(a: string, r: string, e: string): Promise<void> })
+    .processFile(join(root, rel), 'proj', event);
+
+/** A structural SqliteStore double — records the files passed to removeNodesByFile. */
+function makeStoreSpy(): { removed: string[]; store: SqliteStore } {
+  const removed: string[] = [];
+  const store = {
+    removeNodesByFile: (f: string) => { removed.push(f); return 0; },
+    insertNodes: () => {},
+    insertRelationships: () => {},
+  } as unknown as SqliteStore;
+  return { removed, store };
+}
 
 beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), 'recon-wmd-'));
@@ -223,5 +241,107 @@ describe('watcher .md surgical update latency', () => {
     // real tens-of-ms figure is the spike's; the file-scoped assertions above
     // are the structural proof that the cost is O(one file).
     expect(dt).toBeLessThan(1000);
+  });
+});
+
+// ─── P1.5 slice B: live retrieval freshness without restart ──────
+
+describe('watcher .md unlink — SQLite symmetry (slice B fix 1)', () => {
+  it('prunes the SQLite store on a .md unlink (symmetric with the generic path)', async () => {
+    const { removed, store } = makeStoreSpy();
+    const w = new ReconWatcher(graph, [{ dir: root, repoName: 'proj' }], 50, [], root, Infinity, store);
+    await fireOn(w, 'docs/a.md', 'unlink');
+    w.stop();
+    // the .md unlink branch used to return BEFORE any store call, leaving deleted
+    // nodes in SQLite — it must now call removeNodesByFile like the generic branch.
+    expect(removed).toContain('docs/a.md');
+  });
+});
+
+describe('watcher .md change — DOCUMENTED_BY regeneration (slice B fix 2)', () => {
+  const docEdges = () =>
+    [...graph.allRelationships()].filter((r) => r.type === RelationshipType.DOCUMENTED_BY);
+
+  it('regenerates DOCUMENTED_BY edges for the reparsed file\'s citations', async () => {
+    // A code symbol the prose can cite (lines 5-20 of a source file).
+    graph.addNode({
+      id: 'ts:func:login', type: NodeType.Function, name: 'login',
+      file: 'src/auth/login.ts', startLine: 5, endLine: 20,
+      language: Language.TypeScript, package: 'src/auth', exported: true,
+    });
+    // No doc-edge yet — the seed corpus cites nothing.
+    expect(docEdges()).toHaveLength(0);
+
+    writeFileSync(join(root, 'docs', 'a.md'), '# Alpha\nThe validator lives at `src/auth/login.ts:10`.\n');
+    await fire('docs/a.md', 'change');
+
+    // line 10 ∈ login (5-20) → Page → symbol DOCUMENTED_BY edge regenerated.
+    expect(docEdges().some(
+      (e) => e.sourceId === 'md:page:docs/a.md' && e.targetId === 'ts:func:login',
+    )).toBe(true);
+  });
+
+  it('also resolves doc-edges on a brand-new .md (add path)', async () => {
+    graph.addNode({
+      id: 'ts:func:login', type: NodeType.Function, name: 'login',
+      file: 'src/auth/login.ts', startLine: 5, endLine: 20,
+      language: Language.TypeScript, package: 'src/auth', exported: true,
+    });
+    writeFileSync(join(root, 'docs', 'c.md'), '# Gamma\nSee `src/auth/login.ts:10` for the check.\n');
+    await fire('docs/c.md', 'add');
+
+    expect(docEdges().some(
+      (e) => e.sourceId === 'md:page:docs/c.md' && e.targetId === 'ts:func:login',
+    )).toBe(true);
+  });
+});
+
+describe('watcher onChange callback (slice B fix 3)', () => {
+  it('fires onChange after a processed add/change event', async () => {
+    let calls = 0;
+    const w = new ReconWatcher(graph, [{ dir: root, repoName: 'proj' }], 50, [], root, Infinity, undefined, () => { calls++; });
+    writeFileSync(join(root, 'docs', 'a.md'), A_UPDATED);
+    await fireOn(w, 'docs/a.md', 'change');
+    w.stop();
+    expect(calls).toBe(1);
+  });
+
+  it('fires onChange after an unlink event too', async () => {
+    let calls = 0;
+    const w = new ReconWatcher(graph, [{ dir: root, repoName: 'proj' }], 50, [], root, Infinity, undefined, () => { calls++; });
+    await fireOn(w, 'docs/a.md', 'unlink');
+    w.stop();
+    expect(calls).toBe(1);
+  });
+
+  it('a throwing onChange cannot crash the watcher (event still completes + graph updated)', async () => {
+    const w = new ReconWatcher(graph, [{ dir: root, repoName: 'proj' }], 50, [], root, Infinity, undefined, () => {
+      throw new Error('boom');
+    });
+    writeFileSync(join(root, 'docs', 'a.md'), A_UPDATED);
+    // processFile must resolve (not reject) despite the throwing callback.
+    await expect(fireOn(w, 'docs/a.md', 'change')).resolves.toBeUndefined();
+    w.stop();
+    // the surgical update still applied.
+    const aNames = nodesOf('docs/a.md').filter((n) => n.type === NodeType.Section).map((n) => n.name);
+    expect(aNames).toContain('Section Two');
+  });
+});
+
+describe('watcher .md edit reflected by a rebuilt BM25 ranker (slice B fix 3 — staleness gone)', () => {
+  it('a ranker rebuilt from the mutated graph + reloaded searchText ranks the new prose body', async () => {
+    // The serve-time ranker is built ONCE from the initial graph+snapshot, so a
+    // term that lands only in the edited body is invisible to it until rebuilt.
+    const staleRanker = BM25Index.buildFromGraph(graph, (await loadSearchText(root))!);
+    expect(staleRanker.search('zphwqx')).toHaveLength(0);
+
+    writeFileSync(join(root, 'docs', 'a.md'), '# Alpha\nNow contains the zphwqx marker token.\n');
+    await fire('docs/a.md', 'change'); // watcher mutates graph + on-disk snapshot
+
+    // The onChange callback's job: rebuild from the LIVE graph + reloaded snapshot.
+    const freshRanker = BM25Index.buildFromGraph(graph, (await loadSearchText(root))!);
+    const hits = freshRanker.search('zphwqx');
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits.some((h) => h.nodeId === 'md:page:docs/a.md')).toBe(true);
   });
 });
