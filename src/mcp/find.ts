@@ -85,6 +85,16 @@ const INTERROGATIVES: ReadonlySet<string> = new Set([
   'does', 'do', 'is', 'are', 'can', 'should', 'explain', 'describe',
 ]);
 
+// A subset of STRUCTURAL_KEYWORDS that is UNAMBIGUOUSLY structural — these never
+// double as ordinary English the way the SOFT keywords (unused/orphan/dead/test)
+// do. A question carrying one of these expresses real structural intent (e.g.
+// "which functions have no callers") and must NOT be demoted to fulltext, where
+// caller/callee counts can't be computed.
+const HARD_STRUCTURAL_KEYWORDS = [
+  'exported', 'unexported', 'no callers', 'no callees',
+  'implements', 'extends', 'entry point', 'circular',
+] as const;
+
 // ─── Classification ──────────────────────────────────────────────
 
 /**
@@ -102,6 +112,12 @@ function countStructuralKeywords(query: string): number {
   return count;
 }
 
+/** True if the query carries an unambiguously-structural (HARD) keyword. */
+function hasHardStructuralKeyword(query: string): boolean {
+  const lower = query.toLowerCase();
+  return HARD_STRUCTURAL_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
 /**
  * Classify a natural-language query into a search strategy.
  *
@@ -116,8 +132,12 @@ function countStructuralKeywords(query: string): number {
 export function classifyQuery(query: string): QueryStrategy {
   const trimmed = query.trim();
 
-  // Rule 1: wildcard
-  if (trimmed.includes('*') || trimmed.includes('?')) {
+  // Rule 1: wildcard. '*' is always a glob. '?' is a glob ONLY for a single
+  // whitespace-free token ("handle?") — a multi-word natural-language question
+  // ending in/containing '?' ("how does the push gate work?") must fall through
+  // to the classifier rules instead of being force-matched as a (no-match)
+  // pattern, which broke the headline conceptual-query use case.
+  if (trimmed.includes('*') || (trimmed.includes('?') && !/\s/.test(trimmed))) {
     return 'pattern';
   }
 
@@ -146,7 +166,7 @@ export function classifyQuery(query: string): QueryStrategy {
   // trips "orphan"). The <2 guard preserves a genuinely structural question
   // ("what are the exported functions with no callers" = 2 kw stays structural).
   const isQuestion = INTERROGATIVES.has(words[0].toLowerCase()) || trimmed.includes('?');
-  if (isQuestion && kwCount < 2) {
+  if (isQuestion && kwCount < 2 && !hasHardStructuralKeyword(trimmed)) {
     return 'fulltext';
   }
 
@@ -454,26 +474,27 @@ export async function executeFindHybrid(
 
   const bm25Results = ranker.search(query, pool);
 
-  let queryEmbedding: Float32Array;
+  // The semantic arm (embed query → vector search → RRF fuse) must never hard-fail
+  // retrieval. Wrap the WHOLE block — not just embedQuery — so a throw from
+  // vectorStore.search (e.g. a dimension mismatch) also degrades to pure BM25.
   try {
-    queryEmbedding = await embedQuery(query);
+    const queryEmbedding = await embedQuery(query);
+
+    const semanticResults = vectorStore.search(queryEmbedding, pool, {
+      nodeType: [NodeType.Page, NodeType.Section],
+    });
+
+    const fused = mergeWithRRF(bm25Results, semanticResults, pool);
+
+    const results: FindResult[] = [];
+    for (const { nodeId } of fused) {
+      const node = graph.getNode(nodeId);
+      if (node) results.push(buildResult(node, graph));
+    }
+    return applyOptions(results, options);
   } catch {
-    // The embedding layer must never hard-fail retrieval — fall back to BM25.
     return executeFind(graph, query, options, ranker);
   }
-
-  const semanticResults = vectorStore.search(queryEmbedding, pool, {
-    nodeType: [NodeType.Page, NodeType.Section],
-  });
-
-  const fused = mergeWithRRF(bm25Results, semanticResults, pool);
-
-  const results: FindResult[] = [];
-  for (const { nodeId } of fused) {
-    const node = graph.getNode(nodeId);
-    if (node) results.push(buildResult(node, graph));
-  }
-  return applyOptions(results, options);
 }
 
 // ─── Formatting ──────────────────────────────────────────────────

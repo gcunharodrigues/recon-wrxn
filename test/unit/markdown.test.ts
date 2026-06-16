@@ -342,3 +342,34 @@ describe('analyzeMarkdown — file:line citations', () => {
     expect(citations).toHaveLength(0);
   });
 });
+
+// ─── Citation harvest is bounded (ReDoS guard) ───────────────────
+// CITATION_RE backtracks quadratically on a long alphanumeric run with no
+// terminating `:<digit>` (measured: 64k ≈ 4.6s, 1MB > 120s). Run via matchAll on
+// every prose block, a single ≤1MB .md could hang `index` / `serve` auto-index /
+// the watcher (availability DoS) — and the per-file try/catch catches throws, not
+// hangs. The harvest is now bounded per whitespace-delimited token, so a
+// pathological token is skipped while every real (short, whitespace-free) citation
+// is still extracted.
+describe('analyzeMarkdown — citation harvest is bounded (ReDoS guard)', () => {
+  it('a pathological token returns fast AND a normal citation beside it is still extracted', () => {
+    const huge = 'a'.repeat(200_000); // no ":<digit>" → quadratic backtrack pre-fix (~tens of s)
+    const md = ['# H', `See src/auth.ts:42 then ${huge} done.`, ''].join('\n');
+    const start = Date.now();
+    const { citations } = analyzeMarkdown([{ path: 'docs/big.md', content: md }]);
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(500); // post-fix: a few ms (measured ~50ms; 1MB ~120ms)
+    expect(citations).toContainEqual({
+      sourceId: 'md:page:docs/big.md',
+      ref: 'src/auth.ts:42',
+      kind: 'citation',
+    });
+  });
+
+  it('still harvests a normal `src/auth.ts:42` citation (no real citation dropped)', () => {
+    const md = ['# H', 'Ref `src/auth.ts:42` and also lib/x.ts:7 here.', ''].join('\n');
+    const { citations } = analyzeMarkdown([{ path: 'docs/n.md', content: md }]);
+    const refs = citations.filter((c) => c.kind === 'citation').map((c) => c.ref).sort();
+    expect(refs).toEqual(['lib/x.ts:7', 'src/auth.ts:42']);
+  });
+});

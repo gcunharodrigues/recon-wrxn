@@ -60,7 +60,10 @@ export async function embedText(text: string): Promise<Float32Array> {
     throw new Error('Embedder not initialized. Call initEmbedder() first.');
   }
 
-  const output = await _pipeline(text, { pooling: 'mean', normalize: true });
+  // truncation: true bounds the work — an over-long input (e.g. a 1MB prose node)
+  // is truncated to the model's token limit instead of over-allocating. The model
+  // ignores tokens past its limit anyway, so this is strictly safer for normal input.
+  const output = await _pipeline(text, { pooling: 'mean', normalize: true, truncation: true });
   return new Float32Array(output.data);
 }
 

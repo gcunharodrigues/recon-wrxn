@@ -155,6 +155,10 @@ export class VectorStore {
   static deserialize(data: SerializedVectorStore): VectorStore {
     const store = new VectorStore(data.dimensions);
     for (const entry of data.entries) {
+      // Drop any wrong-dimension vector (corrupt/legacy embeddings.json) — an
+      // off-dimension embedding yields NaN cosine scores. add() guards the live
+      // path; deserialize must guard the persisted path the same way.
+      if (entry.embedding.length !== data.dimensions) continue;
       store.entries.push({
         nodeId: entry.nodeId,
         embedding: new Float32Array(entry.embedding),

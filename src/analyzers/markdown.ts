@@ -218,6 +218,15 @@ function parseDerivedFrom(yaml: string): string[] {
  */
 const CITATION_RE = /([A-Za-z0-9_./\\-]+\.[A-Za-z0-9_]+):(\d+)/g;
 
+/**
+ * Per-token length cap for citation harvesting. Real `file.ext:line` citations are
+ * whitespace-free and far shorter than this; any longer token is skipped so the
+ * citation regex — which backtracks quadratically on a long run with no terminating
+ * `:<digit>` (a ≤1MB token took >120s) — can never be driven into a ReDoS hang by a
+ * single pathological .md during `index` / `serve` auto-index / the watcher.
+ */
+const MAX_CITATION_TOKEN = 256;
+
 /** Package grouping for a prose node = its directory ('' for repo-root files). */
 function packageOf(path: string): string {
   const dir = dirname(path);
@@ -293,10 +302,15 @@ function analyzeFile(file: MarkdownFile, out: MarkdownAnalysisResult): void {
     }
 
     // Harvest `file:line` citations from prose body — but NOT from fenced code
-    // blocks, whose example code would manufacture false citations.
+    // blocks, whose example code would manufacture false citations. Matched per
+    // whitespace-delimited token (a real citation has no whitespace), skipping any
+    // over-long token, so a pathological no-match run can't backtrack quadratically.
     if (text && child.type !== 'code') {
-      for (const m of text.matchAll(CITATION_RE)) {
-        out.citations.push({ sourceId: pageId, ref: `${m[1]}:${m[2]}`, kind: 'citation' });
+      for (const token of text.split(/\s+/)) {
+        if (token.length > MAX_CITATION_TOKEN) continue;
+        for (const m of token.matchAll(CITATION_RE)) {
+          out.citations.push({ sourceId: pageId, ref: `${m[1]}:${m[2]}`, kind: 'citation' });
+        }
       }
     }
   }

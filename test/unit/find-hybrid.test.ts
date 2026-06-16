@@ -85,6 +85,41 @@ describe('classifyQuery — interrogative-question demotion (recon-prose-analyze
   });
 });
 
+// ─── (B2) Classifier: ?-routing + hard-structural-intent retention (review fixes) ──
+// Two follow-on classifier bugs from the -04 review:
+//  FIX-2: a multi-word natural-language question ending in '?' was force-classified
+//         'pattern' by Rule 1 (any '?'), then matched nothing — the headline
+//         conceptual-query use case returned "No results". '?' is now a glob wildcard
+//         ONLY for a single whitespace-free token; multi-word '?'-questions fall through.
+//  FIX-3: a genuinely-structural question with ONE *hard* keyword (e.g. "no callers")
+//         was over-demoted to fulltext, where caller counts can't be computed. The
+//         demotion now fires only when NO hard structural keyword is present.
+describe('classifyQuery — ?-routing + hard-structural-intent (recon-prose-analyzer-04 review)', () => {
+  it('a multi-word ?-question routes to fulltext, not pattern ("how does the push gate work?")', () => {
+    expect(classifyQuery('how does the push gate work?')).toBe<QueryStrategy>('fulltext');
+  });
+
+  it('a multi-word ?-question with a soft keyword routes to fulltext ("why is orphan analysis unreliable?")', () => {
+    expect(classifyQuery('why is orphan analysis unreliable?')).toBe<QueryStrategy>('fulltext');
+  });
+
+  it('a single token ending in "?" stays a glob pattern ("handle?")', () => {
+    expect(classifyQuery('handle?')).toBe<QueryStrategy>('pattern');
+  });
+
+  it('a "*"-glob single token stays pattern ("*Handler")', () => {
+    expect(classifyQuery('*Handler')).toBe<QueryStrategy>('pattern');
+  });
+
+  it('a HARD-keyword question stays structural ("which functions have no callers")', () => {
+    expect(classifyQuery('which functions have no callers')).toBe<QueryStrategy>('structural');
+  });
+
+  it('a SOFT-keyword question still demotes to fulltext ("which functions are unused")', () => {
+    expect(classifyQuery('which functions are unused')).toBe<QueryStrategy>('fulltext');
+  });
+});
+
 // ─── (A) Hybrid fusion — the planted case (fake embedder) ────────
 
 describe('executeFindHybrid — RRF fusion floats a vector-strong page BM25 misses', () => {
@@ -201,6 +236,19 @@ describe('executeFindHybrid — falls back to pure BM25', () => {
     const { graph, ranker, store } = setup();
     const sync = executeFind(graph, QUERY, { limit: 5 }, ranker);
     const hybrid = await executeFindHybrid(graph, QUERY, { limit: 5 }, store, null, ranker);
+    expect(hybrid).toEqual(sync);
+  });
+
+  it('vectorStore.search that throws (dimension mismatch) → falls back to BM25, never rejects', async () => {
+    // The review found vectorStore.search sat OUTSIDE the try/catch that wrapped
+    // embedQuery, so a throw from .search (e.g. a wrong-dimension query vector)
+    // escaped the BM25 fallback and rejected the promise. The whole semantic+fuse
+    // block must now be inside the try → any failure degrades to pure BM25.
+    const { graph, ranker, store } = setup(); // store is VectorStore(3)
+    const sync = executeFind(graph, QUERY, { limit: 5 }, ranker);
+    // A query embedder yielding a WRONG-dimension vector makes the REAL store.search throw.
+    const wrongDim = async (_q: string): Promise<Float32Array> => unitVec(4, 0); // 4 ≠ 3
+    const hybrid = await executeFindHybrid(graph, QUERY, { limit: 5 }, store, wrongDim, ranker);
     expect(hybrid).toEqual(sync);
   });
 

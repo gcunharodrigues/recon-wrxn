@@ -188,6 +188,22 @@ describe('VectorStore serialization', () => {
     expect(store.size).toBe(0);
     expect(store.dimensions).toBe(384);
   });
+
+  it('drops a wrong-dimension entry on deserialize (corrupt/legacy embeddings.json)', () => {
+    // add() guards the live path; deserialize must guard the persisted path the same
+    // way — a wrong-dimension vector would otherwise yield NaN cosine scores.
+    const data: SerializedVectorStore = {
+      dimensions: 3,
+      entries: [
+        { nodeId: 'good', embedding: [1, 0, 0] },
+        { nodeId: 'bad', embedding: [1, 0] }, // wrong dimension → must be dropped
+      ],
+    };
+    const store = VectorStore.deserialize(data);
+    expect(store.size).toBe(1);
+    expect(store.has('good')).toBe(true);
+    expect(store.has('bad')).toBe(false);
+  });
 });
 
 // ─── Text Generator Tests ───────────────────────────────────────
