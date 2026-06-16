@@ -34,12 +34,25 @@ const VERSION = '1.0.0';
 export const SERVER_NAME = 'recon-wrxn';
 
 /**
+ * The vector store the MCP handlers use. Either a fixed value (the back-compat
+ * caller — tests, the HTTP path) OR a getter resolved on EACH CallTool request.
+ * The getter form lets `serve` hot-swap the live store mid-session when a detached
+ * background embed lands embeddings.json, bringing hybrid search online with no
+ * restart (P1.5 slice C).
+ */
+export type VectorStoreSource =
+  | VectorStore
+  | null
+  | undefined
+  | (() => VectorStore | null | undefined);
+
+/**
  * Create a configured MCP Server with all handlers registered.
  */
 export function createServer(
   graph: KnowledgeGraph,
   projectRoot?: string,
-  vectorStore?: VectorStore | null,
+  vectorStore?: VectorStoreSource,
 ): Server {
   const server = new Server(
     { name: SERVER_NAME, version: VERSION },
@@ -107,12 +120,15 @@ export function createServer(
     const { name, arguments: args } = request.params;
 
     try {
+      // Resolve the store PER request so a mid-session live-swap is seen by the
+      // very next CallTool — handleToolCall's signature is unchanged.
+      const vs = typeof vectorStore === 'function' ? vectorStore() : vectorStore;
       const result = await handleToolCall(
         name,
         args as Record<string, unknown> | undefined,
         graph,
         projectRoot,
-        vectorStore,
+        vs,
       );
       return {
         content: [{ type: 'text', text: result }],
@@ -153,7 +169,7 @@ export function createServer(
 export async function startServer(
   graph: KnowledgeGraph,
   projectRoot?: string,
-  vectorStore?: VectorStore | null,
+  vectorStore?: VectorStoreSource,
 ): Promise<void> {
   const server = createServer(graph, projectRoot, vectorStore);
   const transport = new StdioServerTransport();

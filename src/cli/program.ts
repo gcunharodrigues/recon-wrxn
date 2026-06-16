@@ -28,6 +28,7 @@ export function buildProgram(): Command {
     .option('--repo <name>', 'Store index under a named repo (for multi-repo support)')
     .option('--embeddings', 'Generate vector embeddings for semantic search')
     .option('--no-embeddings', 'Skip embedding generation (BM25-only; far faster reindex — embeddings are unused by graph.json consumers like the push hook)')
+    .option('--embeddings-only', 'Regenerate embeddings.json from the stored index only — no re-walk, no graph.json rewrite (used by serve to bring hybrid online mid-session)')
     .action(async (options) => {
       await indexCommand(options);
     });
@@ -40,6 +41,7 @@ export function buildProgram(): Command {
     .option('--port <number>', 'Port for HTTP server (default: 3100)', parseInt)
     .option('--no-index', 'Skip auto-indexing, use existing index as-is')
     .option('--no-watch', 'Disable file watcher (still auto-indexes)')
+    .option('--no-serve-embed', 'Do not spawn a background embed at startup (stay BM25-only until an explicit `index --embeddings`)')
     .option('--projects <dirs...>', 'Additional project directories to auto-index and serve')
     .action(async (options) => {
       await serveCommand({ ...options, noIndex: options.index === false, noWatch: options.watch === false });

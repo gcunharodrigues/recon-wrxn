@@ -15,6 +15,14 @@ export interface ReconConfig {
   projects?: string[];
   /** Enable vector embeddings for semantic search */
   embeddings?: boolean;
+  /**
+   * Spawn a detached background embed at `serve` when embeddings are absent or
+   * incomplete, so hybrid search activates mid-session WITHOUT blocking startup
+   * (a full in-process embed costs ~2min). Only-when-stale: nothing is spawned
+   * once embeddings.json covers every embeddable node. Default true; opt out with
+   * `--no-serve-embed` or `"serveEmbed": false`.
+   */
+  serveEmbed?: boolean;
   /** Enable file watcher for live re-indexing */
   watch?: boolean;
   /** Debounce interval in ms for file watcher */
@@ -51,6 +59,7 @@ export interface ReconConfig {
 const DEFAULTS: Required<ReconConfig> = {
   projects: [],
   embeddings: false,
+  serveEmbed: true,
   watch: true,
   watchDebounce: 1500,
   http: false,
@@ -112,6 +121,7 @@ export function mergeWithCLI(
   cli: {
     projects?: string[];
     embeddings?: boolean;
+    serveEmbed?: boolean;
     http?: boolean;
     port?: number;
     noIndex?: boolean;
@@ -129,6 +139,10 @@ export function mergeWithCLI(
     ...(cli.port !== undefined ? { port: cli.port } : {}),
     // --no-index disables watcher too; --no-watch disables watcher only
     ...((cli.noIndex || cli.noWatch) ? { watch: false } : {}),
+    // --no-serve-embed can only DISABLE (commander defaults serveEmbed:true when
+    // the flag is absent, so only an explicit `false` opts out — a config-file
+    // serveEmbed:false is never clobbered by that benign default).
+    ...(cli.serveEmbed === false ? { serveEmbed: false } : {}),
   };
 }
 
@@ -137,6 +151,7 @@ export function mergeWithCLI(
 const INIT_TEMPLATE: ReconConfig = {
   projects: [],
   embeddings: false,
+  serveEmbed: true,
   watch: true,
   ignore: [],
 };

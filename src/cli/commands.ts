@@ -4,8 +4,8 @@
  * Implementation of index, serve, status, clean commands.
  */
 
-import { execSync } from 'node:child_process';
-import { rmSync, existsSync } from 'node:fs';
+import { execSync, spawn } from 'node:child_process';
+import { rmSync, existsSync, watch } from 'node:fs';
 import { join, resolve, basename } from 'node:path';
 import { KnowledgeGraph } from '../graph/graph.js';
 import { buildCrossLanguageEdges, extractGoRoutes } from '../analyzers/cross-language.js';
@@ -19,7 +19,7 @@ import { startServer } from '../mcp/server.js';
 import { setFulltextRanker } from '../mcp/find.js';
 import { BM25Index } from '../search/bm25.js';
 import { VectorStore } from '../search/vector-store.js';
-import { generateEmbeddingText, shouldEmbed } from '../search/text-generator.js';
+import { generateEmbeddingText, shouldEmbed, isEmbeddable } from '../search/text-generator.js';
 import { initEmbedder, embedBatch, disposeEmbedder, DEFAULT_CONFIG } from '../search/embedder.js';
 import { analyzeTreeSitter, analyzeTreeSitterParallel } from '../analyzers/tree-sitter/index.js';
 import { analyzeMarkdown, findMarkdownFiles } from '../analyzers/markdown.js';
@@ -318,10 +318,103 @@ export function partitionEmbeddingWork(
   return { carryOver, reEmbed };
 }
 
-export async function indexCommand(options: { force?: boolean; repo?: string; embeddings?: boolean }): Promise<void> {
+/**
+ * The embedder functions embedGraph depends on. Injectable so the embed pass is
+ * unit-testable with a deterministic fake — the real transformer model is an
+ * optional dependency and a multi-second load. Defaults to the real module fns.
+ */
+export interface EmbedderDeps {
+  initEmbedder: typeof initEmbedder;
+  embedBatch: typeof embedBatch;
+  disposeEmbedder: typeof disposeEmbedder;
+}
+
+const REAL_EMBEDDER: EmbedderDeps = { initEmbedder, embedBatch, disposeEmbedder };
+
+/**
+ * Embed a graph's embeddable nodes into a VectorStore and persist embeddings.json.
+ *
+ * Factored out of indexCommand (slice C) so `index --embeddings-only` and the
+ * serve-time background embed reuse the SAME pass — incremental SHA-256 freshness
+ * included. It writes ONLY embeddings.json (via saveEmbeddings); it never touches
+ * graph.json / search-text.json, so a background embed can run without racing
+ * serve's watcher (which rewrites graph.json non-atomically).
+ *
+ * Freshness inputs are passed in (not re-derived) so behavior is identical for
+ * both callers: indexCommand compares the OLD index hashes vs the freshly-walked
+ * NEW hashes (and honors --force); the embed-only path has no walk, so the stored
+ * hashes serve as both previous and current → every already-embedded unchanged
+ * node carries over and only the rest is embedded.
+ *
+ * Returns the vector counts when something was written, or null when there were
+ * no embeddable nodes (embeddings.json left untouched).
+ */
+export async function embedGraph(
+  projectRoot: string,
+  graph: KnowledgeGraph,
+  searchText: Record<string, string> | null,
+  repoName: string | undefined,
+  freshness: { force?: boolean; previousHashes: Record<string, string> | undefined; currentHashes: Record<string, string> },
+  deps: EmbedderDeps = REAL_EMBEDDER,
+): Promise<{ size: number; reused: number; embedded: number } | null> {
+  // Collect embeddable nodes (code + prose). Prose carries its body via the
+  // searchText snapshot, which is kept OFF the graph node — pass it so the
+  // prose meaning, not a synthetic signature, is what gets embedded. shouldEmbed
+  // (not isEmbeddable) so a BINARY Source node (filename only) is skipped.
+  const proseText = searchText ?? {};
+  const embeddable: EmbeddingWorkItem[] = [];
+  for (const node of graph.nodes.values()) {
+    if (shouldEmbed(node, proseText[node.id])) {
+      embeddable.push({
+        id: node.id,
+        type: node.type,
+        file: node.file,
+        text: generateEmbeddingText(node, proseText[node.id]),
+      });
+    }
+  }
+
+  // SHA-256 incremental freshness: carry unchanged nodes' vectors forward and
+  // re-embed only changed/new ones.
+  const previousStore = freshness.force ? null : await loadEmbeddings(projectRoot, repoName);
+  const { carryOver, reEmbed } = partitionEmbeddingWork(
+    embeddable, previousStore, freshness.previousHashes, freshness.currentHashes,
+  );
+
+  const vectorStore = new VectorStore(DEFAULT_CONFIG.dimensions);
+  for (const item of carryOver) {
+    const vec = previousStore!.get(item.id);
+    if (vec) vectorStore.add(item.id, vec, item.type);
+    else reEmbed.push(item); // defensive: vector vanished → re-embed it
+  }
+
+  if (reEmbed.length > 0) {
+    await deps.initEmbedder();
+    const embeddings = await deps.embedBatch(reEmbed.map(n => n.text));
+    for (let i = 0; i < reEmbed.length; i++) {
+      vectorStore.add(reEmbed[i].id, embeddings[i], reEmbed[i].type);
+    }
+    await deps.disposeEmbedder();
+  }
+
+  if (vectorStore.size > 0) {
+    await saveEmbeddings(projectRoot, vectorStore, repoName);
+    return { size: vectorStore.size, reused: carryOver.length, embedded: reEmbed.length };
+  }
+  return null;
+}
+
+export async function indexCommand(options: { force?: boolean; repo?: string; embeddings?: boolean; embeddingsOnly?: boolean }): Promise<void> {
   const startTime = performance.now();
   const projectRoot = findProjectRoot();
   const repoName = options.repo;
+
+  // --embeddings-only: embed the ALREADY-STORED index, no re-walk, no graph.json
+  // rewrite. This is the detached child serve spawns to bring hybrid online.
+  if (options.embeddingsOnly) {
+    await indexEmbeddingsOnly(projectRoot, repoName);
+    return;
+  }
 
   console.log(`[recon] Indexing from ${projectRoot}${repoName ? ` (repo: ${repoName})` : ''}...`);
 
@@ -520,52 +613,19 @@ export async function indexCommand(options: { force?: boolean; repo?: string; em
   if (doEmbeddings) {
     console.log('[recon] Generating embeddings...');
     try {
-      // Collect embeddable nodes (code + prose). Prose carries its body via the
-      // searchText snapshot, which is kept OFF the graph node — pass it so the
-      // prose meaning, not a synthetic signature, is what gets embedded.
-      const proseText = mdResult.searchText;
-      const embeddable: EmbeddingWorkItem[] = [];
-      for (const node of graph.nodes.values()) {
-        // shouldEmbed (not isEmbeddable) so a BINARY Source node — filename only,
-        // no body — is skipped: embedding its filename adds noise, not meaning.
-        if (shouldEmbed(node, proseText[node.id])) {
-          embeddable.push({
-            id: node.id,
-            type: node.type,
-            file: node.file,
-            text: generateEmbeddingText(node, proseText[node.id]),
-          });
-        }
-      }
-
-      // SHA-256 incremental freshness: carry unchanged nodes' vectors forward and
-      // re-embed only changed/new ones (previously EVERY node was re-embedded).
-      const previousStore = options.force ? null : await loadEmbeddings(projectRoot, repoName);
-      const { carryOver, reEmbed } = partitionEmbeddingWork(
-        embeddable, previousStore, previousHashes, meta.fileHashes,
-      );
-
-      const vectorStore = new VectorStore(DEFAULT_CONFIG.dimensions);
-      for (const item of carryOver) {
-        const vec = previousStore!.get(item.id);
-        if (vec) vectorStore.add(item.id, vec, item.type);
-        else reEmbed.push(item); // defensive: vector vanished → re-embed it
-      }
-
-      if (reEmbed.length > 0) {
-        await initEmbedder();
-        const embeddings = await embedBatch(reEmbed.map(n => n.text));
-        for (let i = 0; i < reEmbed.length; i++) {
-          vectorStore.add(reEmbed[i].id, embeddings[i], reEmbed[i].type);
-        }
-        await disposeEmbedder();
-      }
-
-      if (vectorStore.size > 0) {
-        await saveEmbeddings(projectRoot, vectorStore, repoName);
+      // The embed pass is factored into embedGraph (slice C) so `index
+      // --embeddings-only` and the serve-time background embed reuse it. Prose
+      // carries its body via the searchText snapshot (kept OFF the graph node).
+      // Freshness compares the OLD index hashes vs the freshly-walked NEW hashes.
+      const result = await embedGraph(projectRoot, graph, mdResult.searchText, repoName, {
+        force: options.force,
+        previousHashes,
+        currentHashes: meta.fileHashes,
+      });
+      if (result) {
         console.log(
-          `[recon] Embeddings: ${vectorStore.size} vectors ` +
-          `(${carryOver.length} reused, ${reEmbed.length} re-embedded, ${DEFAULT_CONFIG.dimensions}d)`,
+          `[recon] Embeddings: ${result.size} vectors ` +
+          `(${result.reused} reused, ${result.embedded} re-embedded, ${DEFAULT_CONFIG.dimensions}d)`,
         );
       }
     } catch (err) {
@@ -587,7 +647,68 @@ export async function indexCommand(options: { force?: boolean; repo?: string; em
 
 // ??? serve command ???????????????????????????????????????????????
 
-export async function serveCommand(options?: { repo?: string; http?: boolean; port?: number; noIndex?: boolean; noWatch?: boolean; projects?: string[] }): Promise<void> {
+/**
+ * Embed-only path: regenerate embeddings.json from an ALREADY-STORED index,
+ * WITHOUT re-walking the repo and WITHOUT rewriting graph.json / search-text.json.
+ *
+ * This is what `serve` spawns as a detached child to bring hybrid search online
+ * mid-session: graph.json is left untouched so the child can never race serve's
+ * watcher, which also writes graph.json (non-atomically). With no walk, the stored
+ * file hashes are both previous and current, so every already-embedded unchanged
+ * node carries over and only the missing/changed ones are embedded.
+ *
+ * projectRoot is an argument (not derived) so it is unit-testable without a cwd
+ * dependency; the CLI passes findProjectRoot(). The embedder is injectable for
+ * the same reason embedGraph's is — fast, model-free tests.
+ */
+export async function indexEmbeddingsOnly(
+  projectRoot: string,
+  repoName?: string,
+  deps: EmbedderDeps = REAL_EMBEDDER,
+): Promise<void> {
+  const stored = await loadIndex(projectRoot, repoName);
+  if (!stored) {
+    console.error(`[recon] No index found${repoName ? ` for repo '${repoName}'` : ''}. Run 'recon index' first.`);
+    return;
+  }
+
+  const searchText = await loadSearchText(projectRoot, repoName);
+  const hashes = stored.meta.fileHashes ?? {};
+
+  try {
+    const result = await embedGraph(
+      projectRoot, stored.graph, searchText, repoName,
+      { previousHashes: hashes, currentHashes: hashes },
+      deps,
+    );
+    if (result) {
+      console.log(
+        `[recon] Embeddings: ${result.size} vectors ` +
+        `(${result.reused} reused, ${result.embedded} re-embedded, ${DEFAULT_CONFIG.dimensions}d)`,
+      );
+    } else {
+      console.log('[recon] No embeddable nodes — embeddings.json unchanged.');
+    }
+  } catch (err) {
+    console.error(`[recon] Embedding failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * Decide whether serve should spawn a background embed. True only when embeddings
+ * are enabled (config.serveEmbed) AND the on-disk store is absent (size null) or
+ * incomplete (fewer vectors than embeddable graph nodes) — i.e. only-when-stale.
+ * Pure + exported so the contract is unit-testable independent of serve.
+ */
+export function shouldServeEmbed(opts: {
+  serveEmbed: boolean;
+  vectorStoreSize: number | null;
+  embeddableCount: number;
+}): boolean {
+  return opts.serveEmbed && (opts.vectorStoreSize == null || opts.vectorStoreSize < opts.embeddableCount);
+}
+
+export async function serveCommand(options?: { repo?: string; http?: boolean; port?: number; noIndex?: boolean; noWatch?: boolean; projects?: string[]; serveEmbed?: boolean }): Promise<void> {
   const projectRoot = findProjectRoot();
   const repoName = options?.repo;
 
@@ -719,7 +840,65 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
     watcher.start();
   }
 
+  // ─── Background embed: bring hybrid search ONLINE mid-session ───
+  // The serve auto-index runs with embeddings:false (a full embed blocks startup
+  // by ~2min). Instead, when embeddings are absent/incomplete, spawn a DETACHED
+  // child running `index --embeddings-only` (writes ONLY embeddings.json — never
+  // graph.json, so it cannot race the watcher above). When the child lands
+  // embeddings.json we hot-swap the live store + init the query embedder, with NO
+  // restart. liveStore is what the MCP handler resolves per request (getter below).
+  let liveStore = vectorStore;
+
+  let embeddableCount = 0;
+  for (const node of graph.nodes.values()) {
+    if (isEmbeddable(node)) embeddableCount++;
+  }
+
+  if (shouldServeEmbed({ serveEmbed: config.serveEmbed, vectorStoreSize: vectorStore?.size ?? null, embeddableCount })) {
+    // Detached + unref'd: the child outlives nothing of ours and we never wait on
+    // it. process.argv[1] is this CLI entrypoint; cwd=projectRoot so the child's
+    // findProjectRoot resolves the same install.
+    spawn(
+      process.execPath,
+      [process.argv[1], 'index', '--embeddings-only', ...(repoName ? ['--repo', repoName] : [])],
+      { cwd: projectRoot, detached: true, stdio: 'ignore' },
+    ).unref();
+    console.error('[recon] Background embed started — hybrid activates mid-session when it completes.');
+
+    // Watch the install dir for embeddings.json landing; debounce ~750ms so a
+    // non-atomic write settles before we read it. The watch only RELOADS — it
+    // never re-spawns — and any failure leaves serve BM25-only (never crashes).
+    const embedDir = repoName
+      ? join(projectRoot, '.recon-wrxn', 'repos', repoName)
+      : join(projectRoot, '.recon-wrxn');
+    try {
+      let settle: ReturnType<typeof setTimeout> | null = null;
+      watch(embedDir, (_event, filename) => {
+        if (filename !== 'embeddings.json') return;
+        if (settle) clearTimeout(settle);
+        settle = setTimeout(async () => {
+          try {
+            const reloaded = await loadEmbeddings(projectRoot, repoName);
+            if (reloaded && reloaded.size > 0) {
+              await initEmbedder();
+              liveStore = reloaded;
+              console.error(`[recon] Embeddings updated — hybrid search now active (${reloaded.size} vectors).`);
+            }
+          } catch {
+            // Reload/embedder init failed → stay BM25-only.
+          }
+        }, 750);
+      });
+    } catch {
+      // Watch unavailable (dir missing / platform) → no live swap; serve runs as-is.
+    }
+  }
+
   if (config.http || options?.http) {
+    // NOTE: the HTTP path reads the store statically (the initial vectorStore); the
+    // mid-session live-swap above only takes effect on the stdio MCP path. The
+    // background embed still writes embeddings.json, so an HTTP serve picks hybrid
+    // up on its next restart.
     const { startHttpServer } = await import('../server/http.js');
     const port = options?.port || config.port;
     await startHttpServer({ port, graph, projectRoot, vectorStore });
@@ -727,7 +906,9 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
     await new Promise(() => { });
   } else {
     console.error('[recon] MCP server starting on stdio...');
-    await startServer(graph, projectRoot, vectorStore);
+    // Pass a GETTER so each CallTool resolves the current store — this is what
+    // makes the mid-session hybrid swap visible without a restart.
+    await startServer(graph, projectRoot, () => liveStore);
   }
 }
 
