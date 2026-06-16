@@ -25,6 +25,7 @@ import { parseAllDocuments } from 'yaml';
 import { NodeType, Language } from '../graph/types.js';
 import type { Node } from '../graph/types.js';
 import type { AnalyzerWarning } from './types.js';
+import { IGNORE_DIRS, isLockfile } from './ignore.js';
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -75,15 +76,8 @@ const LANGUAGE_BY_EXT: Record<string, Language> = {
 
 // ─── File discovery ──────────────────────────────────────────────
 
-// Mirrors the markdown/tree-sitter analyzers' IGNORE_DIRS so all analyzers
-// agree on what is noise. Meaningful dot-dirs (.claude/, .wrxn/) are NOT here —
-// the wiki + dropped sources live there and must be walked.
-const IGNORE_DIRS = new Set([
-  'node_modules', '.git', '.recon-wrxn', '.reference', 'vendor', 'target',
-  'build', 'dist', 'out', '.venv', 'venv', '__pycache__', '.mypy_cache',
-  '.pytest_cache', '.cargo', 'bin', 'obj', '.gradle', '.idea',
-  '.vscode', '.github', '.husky', '.next', '.turbo', '.cache', '.aiox',
-]);
+// IGNORE_DIRS is shared with the markdown walker (./ignore.js) so prose and
+// source agree on what is noise — including transient tool-dump dirs.
 
 // NOTE: slice 04 (decision C) owns the size cap — it removes the hard cap from
 // ALL walkers (markdown + this one) and adds an optional `maxFileSize` config.
@@ -129,6 +123,10 @@ export function findSourceFiles(rootDir: string, ignore: string[] = []): SourceF
         continue;
       }
       if (!entry.isFile()) continue;
+
+      // Skip machine-generated lockfiles (package-lock.json / pnpm-lock.yaml /
+      // *-lock.json) that would otherwise be indexed as .json/.yaml Source nodes.
+      if (isLockfile(entry.name)) continue;
 
       const ext = getExtension(entry.name);
       if (!SOURCE_EXTENSIONS.has(ext)) continue;

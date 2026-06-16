@@ -30,6 +30,7 @@ import { toString as mdToString } from 'mdast-util-to-string';
 import { NodeType, RelationshipType, Language } from '../graph/types.js';
 import type { Node, Relationship } from '../graph/types.js';
 import type { AnalyzerWarning } from './types.js';
+import { IGNORE_DIRS } from './ignore.js';
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -79,15 +80,8 @@ export interface MarkdownAnalysisResult {
 
 // ─── File discovery ──────────────────────────────────────────────
 
-// Mirrors the tree-sitter analyzer's IGNORE_DIRS so prose and code agree on
-// what is noise. Meaningful dot-dirs (.claude/, .wrxn/) are intentionally NOT
-// here — the wiki lives there and must be walked.
-const IGNORE_DIRS = new Set([
-  'node_modules', '.git', '.recon-wrxn', '.reference', 'vendor', 'target',
-  'build', 'dist', 'out', '.venv', 'venv', '__pycache__', '.mypy_cache',
-  '.pytest_cache', '.cargo', 'bin', 'obj', '.gradle', '.idea',
-  '.vscode', '.github', '.husky', '.next', '.turbo', '.cache', '.aiox',
-]);
+// IGNORE_DIRS is shared with the source walker (./ignore.js) so prose and
+// source agree on what is noise.
 
 const MAX_FILE_SIZE = 1_000_000; // 1 MB — match the tree-sitter walker's cap.
 
