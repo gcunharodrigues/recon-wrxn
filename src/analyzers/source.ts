@@ -21,7 +21,7 @@
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative } from 'node:path';
-import { parse as parseYaml } from 'yaml';
+import { parseAllDocuments } from 'yaml';
 import { NodeType, Language } from '../graph/types.js';
 import type { Node } from '../graph/types.js';
 import type { AnalyzerWarning } from './types.js';
@@ -264,16 +264,20 @@ function stripHtml(html: string): string {
  * stream so BOTH keys and scalar values are lexically searchable, with the
  * structural punctuation ({}/[]/quotes/commas) dropped — clean BM25 input. Walks
  * maps (emit each key, then recurse the value) and sequences (recurse each item);
- * scalars stringify; null/undefined contribute nothing.
+ * scalars stringify; null/undefined contribute nothing. A depth cap bounds the
+ * recursion so pathologically nested data can't overflow the stack (the per-file
+ * try/catch would contain a RangeError, but relying on stack overflow is fragile).
  */
-function serializeData(value: unknown, parts: string[] = []): string[] {
+const MAX_SERIALIZE_DEPTH = 256;
+function serializeData(value: unknown, parts: string[] = [], depth = 0): string[] {
+  if (depth > MAX_SERIALIZE_DEPTH) return parts;
   if (value === null || value === undefined) return parts;
   if (Array.isArray(value)) {
-    for (const item of value) serializeData(item, parts);
+    for (const item of value) serializeData(item, parts, depth + 1);
   } else if (typeof value === 'object') {
     for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
       parts.push(key);
-      serializeData(val, parts);
+      serializeData(val, parts, depth + 1);
     }
   } else {
     parts.push(String(value));
@@ -285,17 +289,30 @@ function serializeData(value: unknown, parts: string[] = []): string[] {
  * Reduce a text-native source's raw content to searchable body text per format.
  * Structured data (yaml/json) is PARSED then flattened to key+value tokens — a
  * malformed document throws here, which the per-file isolation in analyzeSource
- * turns into a warning + skip (no node). .txt is whole-file; html is stripped.
+ * turns into a warning + skip (no node). An empty/whitespace .json is treated as
+ * an empty body (clean node, no warning) to match empty .yaml (which parses to
+ * null). YAML is parsed via parseAllDocuments so multi-document manifests
+ * (k8s/helm `---`-separated) index EVERY document, not just the first.
+ * .txt is whole-file; html is stripped.
  */
 function extractText(ext: string, raw: string): string {
   switch (ext) {
     case '.txt':
       return raw;
     case '.json':
-      return serializeData(JSON.parse(raw)).join(' ');
+      // Empty/whitespace JSON has no body — JSON.parse('') would throw, so guard
+      // it to a clean empty node (parity with empty YAML parsing to null).
+      return raw.trim() === '' ? '' : serializeData(JSON.parse(raw)).join(' ');
     case '.yml':
-    case '.yaml':
-      return serializeData(parseYaml(raw)).join(' ');
+    case '.yaml': {
+      const parts: string[] = [];
+      for (const doc of parseAllDocuments(raw)) {
+        // Surface a malformed document as a throw → per-file skip + warning.
+        if (doc.errors.length > 0) throw doc.errors[0];
+        serializeData(doc.toJSON(), parts);
+      }
+      return parts.join(' ');
+    }
     default:
       return stripHtml(raw); // .html / .htm
   }

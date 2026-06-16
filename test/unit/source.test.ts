@@ -133,6 +133,67 @@ describe('analyzeSource — .yaml / .yml', () => {
     expect(searchText['source:ci/other.yml']).toContain('8080');
   });
 
+  it('indexes EVERY document of a multi-document YAML (---separated)', () => {
+    // Common k8s/helm shape: multiple docs in one file. The single-doc parser
+    // throws "multiple documents"; parseAllDocuments serializes each.
+    const manifest = [
+      'apiVersion: v1',
+      'kind: Service',
+      'metadata:',
+      '  name: frontend',
+      '---',
+      'apiVersion: apps/v1',
+      'kind: Deployment',
+      'metadata:',
+      '  name: backend',
+      '',
+    ].join('\n');
+    const files: SourceFile[] = [{ path: 'k8s/all.yaml', kind: 'text', ext: '.yaml', content: manifest }];
+
+    const result = analyzeSource(files);
+    // it is a clean node, not a malformed skip
+    expect(result.warnings).toHaveLength(0);
+    expect(result.nodes.find((n) => n.file === 'k8s/all.yaml')).toBeDefined();
+
+    const body = result.searchText['source:k8s/all.yaml'];
+    expect(body).toBeDefined();
+    // keys/values from the FIRST document
+    expect(body).toContain('Service');
+    expect(body).toContain('frontend');
+    // ...AND from the SECOND document
+    expect(body).toContain('Deployment');
+    expect(body).toContain('backend');
+  });
+
+  it('treats an empty/whitespace .json as a clean empty body (parity with empty .yaml)', () => {
+    const files: SourceFile[] = [
+      { path: 'empty.json', kind: 'text', ext: '.json', content: '' },
+      { path: 'ws.json', kind: 'text', ext: '.json', content: '   \n  ' },
+      { path: 'empty.yaml', kind: 'text', ext: '.yaml', content: '' },
+    ];
+
+    const result = analyzeSource(files);
+    // none are malformed → no warnings (pre-fix, empty .json threw a JSON.parse error)
+    expect(result.warnings).toHaveLength(0);
+    // all three yield a clean node with no searchText body
+    for (const f of ['empty.json', 'ws.json', 'empty.yaml']) {
+      expect(result.nodes.find((n) => n.file === f)).toBeDefined();
+      expect(result.searchText[`source:${f}`]).toBeUndefined();
+    }
+  });
+
+  it('bounds recursion on deeply nested structured data (no RangeError → no spurious skip)', () => {
+    // ~5000-deep nesting: JSON.parse succeeds but unbounded serialization
+    // overflows the stack (caught as a per-file warning pre-fix). A depth cap
+    // keeps it a clean node.
+    const deep = '['.repeat(5000) + '1' + ']'.repeat(5000);
+    const files: SourceFile[] = [{ path: 'deep.json', kind: 'text', ext: '.json', content: deep }];
+
+    const result = analyzeSource(files);
+    expect(result.warnings).toHaveLength(0);
+    expect(result.nodes.find((n) => n.file === 'deep.json')).toBeDefined();
+  });
+
   it('skips malformed YAML/JSON with a warning (no node), keeping the good ones', () => {
     const files: SourceFile[] = [
       { path: 'good.json', kind: 'text', ext: '.json', content: '{"ok": true}' },
