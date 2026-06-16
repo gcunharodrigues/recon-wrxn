@@ -10,8 +10,10 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { shouldServeEmbed } from '../../src/cli/commands.js';
+import { shouldServeEmbed, countEmbeddable } from '../../src/cli/commands.js';
 import { loadConfig, mergeWithCLI, initConfig } from '../../src/config/config.js';
+import { KnowledgeGraph } from '../../src/graph/graph.js';
+import { NodeType, Language } from '../../src/graph/types.js';
 
 // ─── shouldServeEmbed (the 4 cases) ──────────────────────────────
 
@@ -32,6 +34,38 @@ describe('shouldServeEmbed', () => {
   it('serveEmbed disabled → false regardless of staleness', () => {
     expect(shouldServeEmbed({ serveEmbed: false, vectorStoreSize: null, embeddableCount: 10 })).toBe(false);
     expect(shouldServeEmbed({ serveEmbed: false, vectorStoreSize: 0, embeddableCount: 10 })).toBe(false);
+  });
+});
+
+// ─── countEmbeddable: matches the embed predicate (shouldEmbed, NOT isEmbeddable) ──
+// The staleness signal must count what embedGraph actually embeds. isEmbeddable
+// over-counts binary Source nodes (filename, no body) that embedGraph skips → on any
+// binary-bearing corpus the count never reaches the store size and serve re-spawns an
+// embed child every time. Lock the predicate alignment here.
+
+describe('countEmbeddable', () => {
+  const mk = (id: string, type: NodeType, file: string) => ({
+    id, type, name: id, file, startLine: 1, endLine: 1,
+    language: Language.Markdown, package: 'p', exported: false,
+  });
+
+  it('counts Page/Section/code + a text-native Source(body), EXCLUDES a binary Source(no body)', () => {
+    const g = new KnowledgeGraph();
+    g.addNode(mk('md:page:a', NodeType.Page, 'a.md'));
+    g.addNode(mk('md:sec:a#h', NodeType.Section, 'a.md'));
+    g.addNode({ ...mk('ts:fn:f', NodeType.Function, 'f.ts'), language: Language.TypeScript, exported: true });
+    g.addNode(mk('src:doc.pdf', NodeType.Source, 'doc.pdf'));    // binary, no body → excluded
+    g.addNode(mk('src:notes.txt', NodeType.Source, 'notes.txt')); // text-native, body below → counted
+
+    // Only the .txt source has a persisted body; the .pdf has none.
+    expect(countEmbeddable(g, { 'src:notes.txt': 'real body text' })).toBe(4); // isEmbeddable would say 5
+  });
+
+  it('null searchText → a Source with no body is not counted', () => {
+    const g = new KnowledgeGraph();
+    g.addNode(mk('md:page:a', NodeType.Page, 'a.md'));
+    g.addNode(mk('src:doc.pdf', NodeType.Source, 'doc.pdf'));
+    expect(countEmbeddable(g, null)).toBe(1); // only the Page
   });
 });
 

@@ -19,7 +19,7 @@ import { startServer } from '../mcp/server.js';
 import { setFulltextRanker } from '../mcp/find.js';
 import { BM25Index } from '../search/bm25.js';
 import { VectorStore } from '../search/vector-store.js';
-import { generateEmbeddingText, shouldEmbed, isEmbeddable } from '../search/text-generator.js';
+import { generateEmbeddingText, shouldEmbed } from '../search/text-generator.js';
 import { initEmbedder, embedBatch, disposeEmbedder, DEFAULT_CONFIG } from '../search/embedder.js';
 import { analyzeTreeSitter, analyzeTreeSitterParallel } from '../analyzers/tree-sitter/index.js';
 import { analyzeMarkdown, findMarkdownFiles } from '../analyzers/markdown.js';
@@ -708,6 +708,23 @@ export function shouldServeEmbed(opts: {
   return opts.serveEmbed && (opts.vectorStoreSize == null || opts.vectorStoreSize < opts.embeddableCount);
 }
 
+/**
+ * Count the graph nodes a background embed would ACTUALLY embed — using the same
+ * `shouldEmbed` predicate as `embedGraph`, NOT `isEmbeddable`. The two diverge on
+ * binary Source nodes (pdf/docx/…): `isEmbeddable` counts them, but `embedGraph`
+ * skips them (no body). Counting with `isEmbeddable` kept `shouldServeEmbed`
+ * permanently true on any binary-bearing corpus → a stray embed child + reload every
+ * serve. Pass the persisted searchText so a text-native Source (non-empty body) is
+ * still counted. Pure + exported so the count contract is unit-testable.
+ */
+export function countEmbeddable(graph: KnowledgeGraph, searchText: Record<string, string> | null): number {
+  let n = 0;
+  for (const node of graph.nodes.values()) {
+    if (shouldEmbed(node, searchText?.[node.id])) n++;
+  }
+  return n;
+}
+
 export async function serveCommand(options?: { repo?: string; http?: boolean; port?: number; noIndex?: boolean; noWatch?: boolean; projects?: string[]; serveEmbed?: boolean }): Promise<void> {
   const projectRoot = findProjectRoot();
   const repoName = options?.repo;
@@ -849,21 +866,31 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
   // restart. liveStore is what the MCP handler resolves per request (getter below).
   let liveStore = vectorStore;
 
-  let embeddableCount = 0;
-  for (const node of graph.nodes.values()) {
-    if (isEmbeddable(node)) embeddableCount++;
-  }
+  // Count with the SAME predicate the child embed uses (shouldEmbed) — isEmbeddable
+  // over-counts binary Source nodes the embed skips, which kept shouldServeEmbed
+  // permanently true (a stray embed child + reload on every serve). Multi-repo
+  // (external projects) is out of scope here: the child embeds root-only, so a merged
+  // count never converges — deferred to slice 09.
+  const embeddableCount = countEmbeddable(graph, searchText);
+  const singleRepo = projects.length === 0;
 
-  if (shouldServeEmbed({ serveEmbed: config.serveEmbed, vectorStoreSize: vectorStore?.size ?? null, embeddableCount })) {
-    // Detached + unref'd: the child outlives nothing of ours and we never wait on
-    // it. process.argv[1] is this CLI entrypoint; cwd=projectRoot so the child's
-    // findProjectRoot resolves the same install.
-    spawn(
-      process.execPath,
-      [process.argv[1], 'index', '--embeddings-only', ...(repoName ? ['--repo', repoName] : [])],
-      { cwd: projectRoot, detached: true, stdio: 'ignore' },
-    ).unref();
-    console.error('[recon] Background embed started — hybrid activates mid-session when it completes.');
+  if (singleRepo && shouldServeEmbed({ serveEmbed: config.serveEmbed, vectorStoreSize: vectorStore?.size ?? null, embeddableCount })) {
+    // Detached + unref'd child. process.argv[1] is this CLI entrypoint; cwd=projectRoot
+    // so the child's findProjectRoot resolves the same install. Wrapped so a spawn
+    // failure (a sync throw, or an async 'error' event: EMFILE/ENOMEM/…) leaves serve
+    // BM25-only and never crashes it.
+    try {
+      const child = spawn(
+        process.execPath,
+        [process.argv[1], 'index', '--embeddings-only', ...(repoName ? ['--repo', repoName] : [])],
+        { cwd: projectRoot, detached: true, stdio: 'ignore' },
+      );
+      child.on('error', () => { /* async spawn failure → stay BM25-only */ });
+      child.unref();
+      console.error('[recon] Background embed started — hybrid activates mid-session when it completes.');
+    } catch {
+      // Synchronous spawn throw → stay BM25-only.
+    }
 
     // Watch the install dir for embeddings.json landing; debounce ~750ms so a
     // non-atomic write settles before we read it. The watch only RELOADS — it
