@@ -25,6 +25,33 @@ export interface FindResult {
   callers: number;
   callees: number;
   method?: boolean;
+  // ─── Hybrid retrieval signal (recon-brain-recall-01) ───
+  // Populated ONLY on the hybrid fulltext path, where mergeWithRRF computes the
+  // per-arm signal; undefined on exact/pattern/structural and the BM25-fallback
+  // paths. formatFindResults ignores these (the agent markdown is unchanged) — the
+  // HTTP door projects them into the structured `hits` array (toFindHits) for
+  // node-stdlib consumers (the Recall hook) that cannot compute a cosine themselves.
+  score?: number;                     // combined RRF score
+  sources?: ('bm25' | 'semantic')[];  // arm provenance; both arms = the consensus signal
+  bm25Score?: number;                 // original BM25 score
+  semanticScore?: number;             // original cosine similarity (semantic arm)
+}
+
+/**
+ * The structured per-hit shape the HTTP find door returns alongside the agent
+ * markdown (recon-brain-recall-01). A projection of FindResult down to what a
+ * node-stdlib consumer reads: identity + location + the per-arm retrieval signal.
+ */
+export interface FindHit {
+  id: string;
+  name: string;
+  type: NodeType;
+  file: string;
+  line: number;
+  score?: number;
+  sources?: ('bm25' | 'semantic')[];
+  bm25Score?: number;
+  semanticScore?: number;
 }
 
 export interface FindOptions {
@@ -510,10 +537,21 @@ export async function executeFindHybrid(
 
     const fused = mergeWithRRF(bm25Results, flooredSemantic, pool);
 
+    // Carry the per-arm signal (RRF score, arm provenance, bm25/semantic scores)
+    // onto each FindResult — the keystone (recon-brain-recall-01). The map used to
+    // keep only the nodeId, discarding the cosine + consensus flag the door must
+    // surface. formatFindResults still ignores these, so the markdown is unchanged.
     const results: FindResult[] = [];
-    for (const { nodeId } of fused) {
-      const node = graph.getNode(nodeId);
-      if (node) results.push(buildResult(node, graph));
+    for (const f of fused) {
+      const node = graph.getNode(f.nodeId);
+      if (!node) continue;
+      results.push({
+        ...buildResult(node, graph),
+        score: f.score,
+        sources: f.sources,
+        bm25Score: f.bm25Score,
+        semanticScore: f.semanticScore,
+      });
     }
     return applyOptions(results, options);
   } catch {
@@ -547,4 +585,24 @@ export function formatFindResults(results: FindResult[]): string {
   }
 
   return lines.join('\n');
+}
+
+/**
+ * Project FindResult[] to the structured per-hit wire shape (recon-brain-recall-01).
+ * The HTTP find door returns this alongside the markdown so a node-stdlib consumer
+ * reads identity + location + the per-arm signal. Score fields ride through only on
+ * the hybrid fulltext path; they are simply absent (undefined) otherwise.
+ */
+export function toFindHits(results: FindResult[]): FindHit[] {
+  return results.map(r => ({
+    id: r.id,
+    name: r.name,
+    type: r.type,
+    file: r.file,
+    line: r.line,
+    score: r.score,
+    sources: r.sources,
+    bm25Score: r.bm25Score,
+    semanticScore: r.semanticScore,
+  }));
 }

@@ -12,8 +12,8 @@ import { KnowledgeGraph } from '../graph/graph.js';
 import { NodeType, RelationshipType, Language } from '../graph/types.js';
 import type { Node, Relationship } from '../graph/types.js';
 import { VectorStore } from '../search/vector-store.js';
-import { executeFind, executeFindHybrid, formatFindResults } from './find.js';
-import type { FindOptions } from './find.js';
+import { executeFind, executeFindHybrid, formatFindResults, toFindHits } from './find.js';
+import type { FindOptions, FindResult, FindHit } from './find.js';
 import { isEmbedderReady, embedText } from '../search/embedder.js';
 import { runRule, formatRuleResult, isProseType } from './rules.js';
 import type { RuleName } from './rules.js';
@@ -340,15 +340,17 @@ function handleMap(
 
 // ─── recon_find ───────────────────────────────────────────────
 
-async function handleFind(
+/**
+ * Core find: query → filtered FindResult[] (hybrid score fields populated on the
+ * hybrid fulltext path). Shared by the markdown handler (stdio, handleFind) and the
+ * structured HTTP door (findStructured). The caller guarantees args.query is present.
+ */
+async function findResults(
   args: Record<string, unknown>,
   graph: KnowledgeGraph,
   vectorStore?: VectorStore | null,
-): Promise<string> {
-  const query = args?.query as string;
-  if (!query) {
-    return invalidParameter('query', '', ['<search term>']).toJSON();
-  }
+): Promise<FindResult[]> {
+  const query = args.query as string;
 
   const options: FindOptions = {};
   if (args?.type) options.type = args.type as NodeType;
@@ -382,7 +384,44 @@ async function handleFind(
     filtered = filtered.filter(r => r.package.includes(pkgFilter));
   }
 
-  return formatFindResults(filtered);
+  return filtered;
+}
+
+async function handleFind(
+  args: Record<string, unknown>,
+  graph: KnowledgeGraph,
+  vectorStore?: VectorStore | null,
+): Promise<string> {
+  const query = args?.query as string;
+  if (!query) {
+    return invalidParameter('query', '', ['<search term>']).toJSON();
+  }
+  return formatFindResults(await findResults(args, graph, vectorStore));
+}
+
+/**
+ * Structured find for the HTTP door (recon-brain-recall-01). Returns BOTH the
+ * agent-facing markdown — byte-identical to the stdio recon_find output — and the
+ * structured per-hit array that node-stdlib consumers (the Recall hook, slice 04)
+ * read for the cosine + arm provenance. Mirrors handleToolCall's empty-graph +
+ * missing-query guards so the markdown matches the stdio path exactly; on either
+ * guard `hits` is the empty array.
+ */
+export async function findStructured(
+  args: Record<string, unknown> | undefined,
+  graph: KnowledgeGraph,
+  vectorStore?: VectorStore | null,
+): Promise<{ result: string; hits: FindHit[] }> {
+  const a = args ?? {};
+  if (graph.nodeCount === 0) {
+    return { result: emptyGraph().toJSON(), hits: [] };
+  }
+  const query = a?.query as string;
+  if (!query) {
+    return { result: invalidParameter('query', '', ['<search term>']).toJSON(), hits: [] };
+  }
+  const filtered = await findResults(a, graph, vectorStore);
+  return { result: formatFindResults(filtered), hits: toFindHits(filtered) };
 }
 
 // ─── recon_explain ────────────────────────────────────────────

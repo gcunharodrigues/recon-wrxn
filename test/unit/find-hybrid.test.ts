@@ -437,3 +437,48 @@ describe('mergeWithRRF — weighted RRF protects a confident BM25 #1 (P1.5 slice
     expect(weighted[0].nodeId).toBe('target'); // hit@1 recovered
   });
 });
+
+// ─── Keystone: per-arm signal threaded onto FindResult (recon-brain-recall-01) ──
+
+describe('executeFindHybrid — threads the per-arm signal onto each FindResult (recon-brain-recall-01)', () => {
+  // mergeWithRRF computes each hit's combined RRF score, arm provenance (sources) and
+  // the per-arm bm25/semantic scores; the find path used to keep ONLY the nodeId. The
+  // keystone surfaces them on FindResult so the HTTP door can hand a node-stdlib
+  // consumer (the Recall hook, slice 04) the cosine it cannot compute itself.
+  it('a both-arms fulltext hit carries score, sources=[bm25,semantic], bm25Score and semanticScore', async () => {
+    const graph = new KnowledgeGraph();
+    const p = page('md:page:concept.md', 'Concept Page', 'docs/concept.md');
+    graph.addNode(p);
+    graph.addNode(code('ts:func:noise', 'noise', 'src/noise.ts'));
+    // Body shares the query terms → BM25 hit; planted vector aligned → semantic hit.
+    const ranker = BM25Index.buildFromGraph(graph, { [p.id]: 'semantic retrieval concept body' });
+    const store = new VectorStore(3);
+    store.add(p.id, unitVec(3, 0), NodeType.Page); // cosine ~1.0 with the query embedding
+
+    const out = await executeFindHybrid(
+      graph, 'semantic retrieval concept', { limit: 5 }, store, fakeEmbed(unitVec(3, 0)), ranker,
+    );
+    const hit = out.find(r => r.id === p.id);
+    expect(hit).toBeDefined();
+    expect(typeof hit!.score).toBe('number');
+    expect(hit!.sources).toEqual(['bm25', 'semantic']); // found by BOTH arms = consensus
+    expect(typeof hit!.bm25Score).toBe('number');
+    expect(typeof hit!.semanticScore).toBe('number');
+    expect(hit!.semanticScore!).toBeGreaterThan(0.9); // cosine ~1.0
+  });
+
+  it('a non-fulltext (exact) result has NO hybrid score fields (additive / opt-in)', async () => {
+    const graph = new KnowledgeGraph();
+    graph.addNode(code('ts:func:GetUser', 'GetUser', 'src/user.ts'));
+    const ranker = BM25Index.buildFromGraph(graph);
+    const store = new VectorStore(3);
+    store.add('ts:func:GetUser', unitVec(3, 0), NodeType.Function);
+
+    // 'GetUser' is a single code-like token → exact strategy → executeFind verbatim.
+    const out = await executeFindHybrid(graph, 'GetUser', { limit: 5 }, store, fakeEmbed(unitVec(3, 0)), ranker);
+    const hit = out.find(r => r.name === 'GetUser');
+    expect(hit).toBeDefined();
+    expect(hit!.sources).toBeUndefined(); // exact path never sets arm provenance
+    expect(hit!.semanticScore).toBeUndefined();
+  });
+});

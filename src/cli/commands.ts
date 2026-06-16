@@ -933,13 +933,12 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
   }
 
   if (config.http || options?.http) {
-    // NOTE: the HTTP path reads the store statically (the initial vectorStore); the
-    // mid-session live-swap above only takes effect on the stdio MCP path. The
-    // background embed still writes embeddings.json, so an HTTP serve picks hybrid
-    // up on its next restart.
+    // The HTTP door reads the store through the SAME live getter as stdio
+    // (() => liveStore), so a POST to the find endpoint sees the mid-session embedding
+    // hot-swap above — not a stale by-value snapshot (recon-brain-recall-01).
     const { startHttpServer } = await import('../server/http.js');
     const port = options?.port || config.port;
-    await startHttpServer({ port, graph, projectRoot, vectorStore });
+    await startHttpServer({ port, graph, projectRoot, vectorStore: () => liveStore });
     // Keep process alive
     await new Promise(() => { });
   } else {

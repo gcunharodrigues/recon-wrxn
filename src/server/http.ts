@@ -19,9 +19,9 @@ import { existsSync } from 'node:fs';
 import express from 'express';
 import cors from 'cors';
 import type { KnowledgeGraph } from '../graph/graph.js';
-import type { VectorStore } from '../search/vector-store.js';
+import type { VectorStoreSource } from '../mcp/server.js';
 import { RECON_TOOLS } from '../mcp/tools.js';
-import { handleToolCall } from '../mcp/handlers.js';
+import { handleToolCall, findStructured } from '../mcp/handlers.js';
 
 import {
   getResourceDefinitions,
@@ -36,7 +36,12 @@ export interface HttpServerOptions {
   host?: string;
   graph: KnowledgeGraph;
   projectRoot?: string;
-  vectorStore?: VectorStore | null;
+  /**
+   * Either a fixed value (back-compat — tests, a cold HTTP serve) OR a getter
+   * resolved on EACH request. serve passes `() => liveStore` so the find door sees
+   * the mid-session embedding hot-swap, mirroring the stdio path (recon-brain-recall-01).
+   */
+  vectorStore?: VectorStoreSource;
 }
 
 /**
@@ -87,13 +92,26 @@ export function createApp(options: HttpServerOptions): express.Express {
     const { name } = req.params;
     const args = req.body as Record<string, unknown> | undefined;
 
+    // Resolve the store through the live getter (when one was passed) so a mid-session
+    // embedding hot-swap is seen on THIS request — not a by-value snapshot captured at
+    // createApp (recon-brain-recall-01). Mirrors the stdio CallTool resolution.
+    const vs = typeof vectorStore === 'function' ? vectorStore() : vectorStore;
+
     try {
+      // recon_find additionally surfaces the structured per-hit signal (cosine + arm
+      // provenance) for node-stdlib consumers (the Recall hook); the markdown `result`
+      // stays byte-identical to the stdio output. Every other tool returns { result }.
+      if (name === 'recon_find') {
+        const { result, hits } = await findStructured(args, graph, vs);
+        res.json({ result, hits });
+        return;
+      }
       const result = await handleToolCall(
         name,
         args,
         graph,
         projectRoot,
-        vectorStore,
+        vs,
       );
       res.json({ result });
     } catch (error) {
