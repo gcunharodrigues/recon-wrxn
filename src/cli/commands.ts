@@ -19,7 +19,7 @@ import { startServer } from '../mcp/server.js';
 import { setFulltextRanker } from '../mcp/find.js';
 import { BM25Index } from '../search/bm25.js';
 import { VectorStore } from '../search/vector-store.js';
-import { generateEmbeddingText, isEmbeddable } from '../search/text-generator.js';
+import { generateEmbeddingText, shouldEmbed } from '../search/text-generator.js';
 import { initEmbedder, embedBatch, disposeEmbedder, DEFAULT_CONFIG } from '../search/embedder.js';
 import { analyzeTreeSitter, analyzeTreeSitterParallel } from '../analyzers/tree-sitter/index.js';
 import { analyzeMarkdown, findMarkdownFiles } from '../analyzers/markdown.js';
@@ -510,7 +510,9 @@ export async function indexCommand(options: { force?: boolean; repo?: string; em
       const proseText = mdResult.searchText;
       const embeddable: EmbeddingWorkItem[] = [];
       for (const node of graph.nodes.values()) {
-        if (isEmbeddable(node)) {
+        // shouldEmbed (not isEmbeddable) so a BINARY Source node — filename only,
+        // no body — is skipped: embedding its filename adds noise, not meaning.
+        if (shouldEmbed(node, proseText[node.id])) {
           embeddable.push({
             id: node.id,
             type: node.type,

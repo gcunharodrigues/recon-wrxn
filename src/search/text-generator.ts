@@ -40,10 +40,26 @@ const EMBEDDABLE_TYPES = new Set<NodeType>([
 const PROSE_TYPES = new Set<NodeType>([NodeType.Page, NodeType.Section, NodeType.Source]);
 
 /**
- * Check if a node should be embedded.
+ * Check if a node's TYPE is eligible for embedding.
  */
 export function isEmbeddable(node: Node): boolean {
   return EMBEDDABLE_TYPES.has(node.type);
+}
+
+/**
+ * Decide whether a node should actually be embedded, given its prose body.
+ *
+ * Type eligibility (isEmbeddable) is necessary but not sufficient for Source: a
+ * binary Source node (pdf/docx/…) has NO parsed body — only a filename — so
+ * embedding it adds a noise vector, not meaning. Per PRD intent a binary source is
+ * a minimal node; its searchable content arrives via the distilled wiki page. So a
+ * Source node is embedded only when it has a non-empty body (text-native sources);
+ * every other embeddable type is unconditional.
+ */
+export function shouldEmbed(node: Node, body?: string): boolean {
+  if (!isEmbeddable(node)) return false;
+  if (node.type === NodeType.Source) return !!body?.trim();
+  return true;
 }
 
 /**

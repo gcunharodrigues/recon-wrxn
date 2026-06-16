@@ -13,7 +13,7 @@ import type { SourceFile } from '../../src/analyzers/source.js';
 import { NodeType, Language } from '../../src/graph/types.js';
 import type { Node } from '../../src/graph/types.js';
 import { isProseType } from '../../src/mcp/rules.js';
-import { isEmbeddable, generateEmbeddingText } from '../../src/search/text-generator.js';
+import { isEmbeddable, generateEmbeddingText, shouldEmbed } from '../../src/search/text-generator.js';
 
 const HTML = [
   '<!DOCTYPE html>',
@@ -139,5 +139,50 @@ describe('Source type-gate', () => {
     // prose path: name + body, NOT the "Source: name / File: ..." code signature
     expect(text).toBe('page.html\nQuantum computing body text.');
     expect(text).not.toContain('File:');
+  });
+});
+
+// ─── Embedding gate: binary Source nodes carry no vector ─────────
+// A binary Source node (pdf/docx/…) has only a filename — no parsed body. It is
+// type-embeddable, but embedding its filename adds a noise vector, not meaning
+// (PRD: binary = minimal node; searchable content arrives via the distilled page).
+// shouldEmbed is the gate the index embed loop uses to decide what gets a vector.
+
+describe('Source embedding gate — shouldEmbed', () => {
+  it('a binary Source node (no body) is NOT embedded, though its TYPE is eligible', () => {
+    const node = sourceNode('source:papers/study.pdf');
+    expect(isEmbeddable(node)).toBe(true); // type-eligible
+    expect(shouldEmbed(node, undefined)).toBe(false); // ...but no body → no vector
+    expect(shouldEmbed(node, '')).toBe(false);
+    expect(shouldEmbed(node, '   ')).toBe(false); // whitespace-only is empty too
+  });
+
+  it('a text-native Source node (with body) IS embedded', () => {
+    const node = sourceNode('source:docs/page.html');
+    expect(shouldEmbed(node, 'Quantum computing body text.')).toBe(true);
+  });
+});
+
+// ─── stripHtml is linear (ReDoS guard) ───────────────────────────
+// The old <script>/<style> scrubber `/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi`
+// is O(n²): an unclosed <script> makes the lazy `[\s\S]*?` scan to end-of-string
+// from each of O(n) start positions. Measured: ~990 KB unclosed-<script> ≈ 28 s — an
+// availability DoS, and the per-file try/catch catches throws, not hangs. The
+// scrubber is now a single-pass indexOf scan (no backtracking).
+
+describe('analyzeSource — stripHtml is linear (ReDoS guard)', () => {
+  it('an adversarial ~1 MB unclosed-<script> input strips fast AND drops the script content', () => {
+    const huge = '<script>leakedsecret '.repeat(50_000); // ~1 MB, never closed
+    const html = `<h1>Visible Heading</h1>${huge}`;
+    const file: SourceFile = { path: 'docs/evil.html', kind: 'text', ext: '.html', content: html };
+
+    const start = Date.now();
+    const { searchText } = analyzeSource([file]);
+    const elapsed = Date.now() - start;
+
+    expect(elapsed).toBeLessThan(500); // pre-fix: ~28 s of O(n²) backtrack
+    const body = searchText['source:docs/evil.html'] ?? '';
+    expect(body).toContain('Visible Heading'); // real prose survives
+    expect(body).not.toContain('leakedsecret'); // unclosed-script content removed
   });
 });

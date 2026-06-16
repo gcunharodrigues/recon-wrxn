@@ -11,14 +11,14 @@
 
 import chokidar from 'chokidar';
 import type { FSWatcher } from 'chokidar';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { join, relative, resolve, basename } from 'node:path';
 import { KnowledgeGraph } from '../graph/graph.js';
 import { NodeType, RelationshipType } from '../graph/types.js';
 import { extractFromFile } from '../analyzers/tree-sitter/extractor.js';
 import { getLanguageForFile, isLanguageAvailable } from '../analyzers/tree-sitter/parser.js';
 import { analyzeMarkdown } from '../analyzers/markdown.js';
-import { analyzeSource, BINARY_SOURCE_EXTENSIONS, SOURCE_EXTENSIONS } from '../analyzers/source.js';
+import { analyzeSource, BINARY_SOURCE_EXTENSIONS, SOURCE_EXTENSIONS, MAX_FILE_SIZE } from '../analyzers/source.js';
 import type { SourceFile } from '../analyzers/source.js';
 import { saveIndex, loadSearchText, saveSearchText } from '../storage/store.js';
 import { SqliteStore } from '../storage/sqlite.js';
@@ -572,6 +572,8 @@ export class ReconWatcher {
 
     let freshSearchText: Record<string, string> = {};
     if (event !== 'unlink') {
+      // NOTE: no MAX_FILE_SIZE cap here — pre-existing markdown behavior, out of
+      // scope for multiformat-distill-01 (the source path below IS capped).
       let content: string;
       try {
         content = readFileSync(absPath, 'utf-8');
@@ -623,6 +625,19 @@ export class ReconWatcher {
       if (BINARY_SOURCE_EXTENSIONS.has(ext)) {
         file = { path: relPath, kind: 'binary', ext };
       } else {
+        // SECURITY: cap the read at the same MAX_FILE_SIZE the walker (source.ts)
+        // uses, BEFORE reading, so a watcher event on an oversized text-native
+        // source can't OOM the long-lived process. Over-cap (or a vanished file) →
+        // treat as removal: nodes already gone, just prune the snapshot.
+        try {
+          if (statSync(absPath).size > MAX_FILE_SIZE) {
+            await this.updateSearchTextSnapshot(staleKeys, {});
+            return;
+          }
+        } catch {
+          await this.updateSearchTextSnapshot(staleKeys, {});
+          return;
+        }
         let content: string;
         try {
           content = readFileSync(absPath, 'utf-8');

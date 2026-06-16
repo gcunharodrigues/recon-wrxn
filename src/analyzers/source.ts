@@ -84,7 +84,7 @@ const IGNORE_DIRS = new Set([
 // ALL walkers (markdown + this one) and adds an optional `maxFileSize` config.
 // Mirrors markdown.ts:92 for now; applies only to text-native reads (binary
 // files are never read, so a large binary is still registered as a minimal node).
-const MAX_FILE_SIZE = 1_000_000; // 1 MB
+export const MAX_FILE_SIZE = 1_000_000; // 1 MB
 
 function getExtension(path: string): string {
   const dot = path.lastIndexOf('.');
@@ -176,15 +176,73 @@ function stripControlChars(text: string): string {
 }
 
 /**
- * Strip HTML to readable text. Drops <script>/<style> blocks (content + tags)
- * and comments wholesale, removes every remaining tag, decodes the common named
- * + numeric entities, and collapses whitespace. Regexes are linear (no nested
- * quantifier over an unbounded run) so a pathological document can't backtrack.
+ * Remove <script>/<style> blocks (content + tags) in a SINGLE forward pass.
+ *
+ * The previous regex `/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi` is O(n²): an
+ * unclosed <script> makes the lazy `[\s\S]*?` scan to end-of-string from each of
+ * O(n) start positions (a ~1 MB unclosed-<script> doc took ~28 s — an availability
+ * DoS, and the per-file try/catch catches throws, not hangs). This indexOf-based
+ * scan visits every char at most once: find the next `<`, classify it as a
+ * script/style open tag (word-boundary checked, mirroring the old `\b`), drop
+ * through the matching close tag, and when no close tag exists cut from the open
+ * tag to end-of-string. Linear, no backtracking, same removal semantics.
+ */
+function stripScriptStyle(html: string): string {
+  const lower = html.toLowerCase();
+  const tags = ['script', 'style'];
+  let out = '';
+  let i = 0;
+
+  while (i < html.length) {
+    const lt = lower.indexOf('<', i);
+    if (lt < 0) {
+      out += html.slice(i);
+      break;
+    }
+    out += html.slice(i, lt);
+
+    // Classify the tag at `lt`. `\b` after the name = the next char must be
+    // non-word ([a-z0-9_]); NaN (end of string) is non-word, so it matches too.
+    let matched: string | null = null;
+    for (const tag of tags) {
+      if (lower.startsWith(tag, lt + 1)) {
+        const c = lower.charCodeAt(lt + 1 + tag.length);
+        const isWord = (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 95;
+        if (!isWord) {
+          matched = tag;
+          break;
+        }
+      }
+    }
+
+    if (!matched) {
+      out += '<';
+      i = lt + 1;
+      continue;
+    }
+
+    out += ' '; // the dropped block becomes a single separator space
+    const openEnd = lower.indexOf('>', lt);
+    if (openEnd < 0) break; // unclosed open tag → cut to end-of-string
+    const close = lower.indexOf('</' + matched, openEnd + 1);
+    if (close < 0) break; // no closing tag → cut from open tag to end-of-string
+    const closeEnd = lower.indexOf('>', close);
+    if (closeEnd < 0) break; // closing tag never terminates → cut to end
+    i = closeEnd + 1;
+  }
+
+  return out;
+}
+
+/**
+ * Strip HTML to readable text. Drops <script>/<style> blocks (content + tags, via
+ * the linear stripScriptStyle scan above) and comments, removes every remaining
+ * tag, decodes the common named + numeric entities, and collapses whitespace. No
+ * step uses a nested quantifier over an unbounded run, so a pathological document
+ * can't backtrack.
  */
 function stripHtml(html: string): string {
-  return html
-    .replace(/<!--[\s\S]*?-->/g, ' ')
-    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
+  return stripScriptStyle(html.replace(/<!--[\s\S]*?-->/g, ' '))
     .replace(/<[^>]*>/g, ' ')
     .replace(/&nbsp;/gi, ' ')
     .replace(/&amp;/gi, '&')

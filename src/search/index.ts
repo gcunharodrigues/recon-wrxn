@@ -4,7 +4,7 @@ export type { BM25Result, SerializedBM25 } from './bm25.js';
 export { VectorStore } from './vector-store.js';
 export type { VectorEntry, VectorSearchResult, SerializedVectorStore } from './vector-store.js';
 
-export { generateEmbeddingText, isEmbeddable } from './text-generator.js';
+export { generateEmbeddingText, isEmbeddable, shouldEmbed } from './text-generator.js';
 
 export { initEmbedder, embedText, embedBatch, disposeEmbedder, isEmbedderReady, DEFAULT_CONFIG } from './embedder.js';
 export type { EmbedderConfig } from './embedder.js';
