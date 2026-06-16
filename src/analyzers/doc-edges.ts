@@ -24,7 +24,7 @@ import { NodeType, RelationshipType, Language } from '../graph/types.js';
 import type { Node, Relationship } from '../graph/types.js';
 import type { DocCitation } from './markdown.js';
 
-/** Prose never documents prose — only code nodes are valid DOCUMENTED_BY targets. */
+/** Prose never documents prose — code nodes AND raw (non-prose) Source artifacts are valid DOCUMENTED_BY targets. */
 function isCodeTarget(node: Node): boolean {
   return node.language !== Language.Markdown;
 }

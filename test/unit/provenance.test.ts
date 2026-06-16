@@ -179,6 +179,6 @@ describe('provenance — recon_impact BFS skips the DOCUMENTED_BY edge', () => {
     // The only incoming edge is Page -DOCUMENTED_BY-> Source; it must be skipped,
     // so the documenting page is never in the blast radius.
     expect(out).not.toContain('Attention Distilled');
-    expect(out).toContain('0 direct');
+    expect(out).toContain('**Summary:** 0 direct callers');
   });
 });
