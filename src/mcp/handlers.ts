@@ -584,6 +584,87 @@ function handleExplain(
   return lines.join('\n');
 }
 
+/** A structured recon_explain neighbor — what `wrxn brain query --neighbors` renders. */
+export type NeighborRelationship =
+  | 'caller' | 'callee' | 'import' | 'importedBy'
+  | 'method' | 'implementedBy' | 'usedBy' | 'testRef';
+
+export interface NeighborHit {
+  name: string;
+  type: NodeType;
+  file: string;
+  line: number;
+  relationship: NeighborRelationship;
+}
+
+function neighborsFromRels(
+  graph: KnowledgeGraph,
+  rels: Relationship[],
+  side: 'source' | 'target',
+  relationship: NeighborRelationship,
+): NeighborHit[] {
+  return rels.map((r) => {
+    const id = side === 'source' ? r.sourceId : r.targetId;
+    const n = graph.getNode(id);
+    return {
+      name: n?.name ?? id,
+      type: n?.type ?? NodeType.Function,
+      file: n?.file ?? '',
+      line: n?.startLine ?? 0,
+      relationship,
+    };
+  });
+}
+
+/**
+ * Structured projection of recon_explain's neighborhood — the SAME 8 relationship
+ * categories handleExplain renders in markdown, flattened to NeighborHit[]. Mirrors
+ * toFindHits: a SEPARATE projection of the same graph traversal, so the markdown the
+ * stdio path emits stays untouched (recon-brain-recall-review #5).
+ */
+function collectNeighbors(graph: KnowledgeGraph, node: Node): NeighborHit[] {
+  const incoming = graph.getIncoming(node.id);
+  const outgoing = graph.getOutgoing(node.id);
+  const isCall = (t: RelationshipType) =>
+    t === RelationshipType.CALLS || t === RelationshipType.CALLS_API;
+  return [
+    ...neighborsFromRels(graph, incoming.filter(r => isCall(r.type)), 'source', 'caller'),
+    ...neighborsFromRels(graph, outgoing.filter(r => isCall(r.type)), 'target', 'callee'),
+    ...neighborsFromRels(graph, outgoing.filter(r => r.type === RelationshipType.IMPORTS), 'target', 'import'),
+    ...neighborsFromRels(graph, incoming.filter(r => r.type === RelationshipType.IMPORTS), 'source', 'importedBy'),
+    ...neighborsFromRels(graph, outgoing.filter(r => r.type === RelationshipType.HAS_METHOD), 'target', 'method'),
+    ...neighborsFromRels(graph, incoming.filter(r => r.type === RelationshipType.IMPLEMENTS), 'source', 'implementedBy'),
+    ...neighborsFromRels(graph, incoming.filter(r => r.type === RelationshipType.USES_COMPONENT), 'source', 'usedBy'),
+    ...neighborsFromRels(graph, incoming.filter((r) => {
+      const src = graph.getNode(r.sourceId);
+      return Boolean(src && src.isTest);
+    }), 'source', 'testRef'),
+  ];
+}
+
+/**
+ * Structured recon_explain for the HTTP door (recon-brain-recall-review #5). Returns
+ * the agent-facing markdown — byte-identical to the stdio recon_explain output — AND
+ * the structured `neighbors` the kernel CLI's `--neighbors` view reads. Mirrors
+ * handleToolCall's empty-graph guard + handleExplain's missing/unresolved guards so
+ * the markdown matches the stdio path exactly; on any guard `neighbors` is empty.
+ */
+export function explainStructured(
+  args: Record<string, unknown> | undefined,
+  graph: KnowledgeGraph,
+): { result: string; neighbors: NeighborHit[] } {
+  const a = args ?? {};
+  if (graph.nodeCount === 0) {
+    return { result: emptyGraph().toJSON(), neighbors: [] };
+  }
+  const result = handleExplain(a, graph);
+  const name = a?.name as string;
+  if (!name) return { result, neighbors: [] };
+  const resolved = resolveSymbol(graph, name, a?.file as string);
+  if (resolved.error) return { result, neighbors: [] };
+  return { result, neighbors: collectNeighbors(graph, resolved.node!) };
+}
+
 // ─── recon_impact ─────────────────────────────────────────────
 
 function handleImpact(

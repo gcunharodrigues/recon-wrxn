@@ -16,7 +16,7 @@ import { detectV5Index, migrateV5ToV6, detectV6Index } from '../storage/migrate.
 import { generateAgentsMd } from '../generators/agents-gen.js';
 import type { IndexMeta } from '../storage/types.js';
 import { startServer } from '../mcp/server.js';
-import { maybeStartQueryDoor } from '../server/endpoint.js';
+import { startQueryDoorSafe } from '../server/endpoint.js';
 import { setFulltextRanker } from '../mcp/find.js';
 import { BM25Index } from '../search/bm25.js';
 import { VectorStore } from '../search/vector-store.js';
@@ -949,7 +949,8 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
     // so a short-lived client (the kernel recall hook) can reach this one warm index
     // without a second cold serve. Both transports run in this single process; the
     // door reads the SAME live store getter as stdio. Default off → serve unchanged.
-    const door = await maybeStartQueryDoor({
+    // Fail-open: a door bind/FS error must not kill serve before stdio starts.
+    const door = await startQueryDoorSafe({
       serveHttp: config.serveHttp,
       reconDir: join(projectRoot, '.recon-wrxn'),
       graph,

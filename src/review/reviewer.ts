@@ -5,7 +5,7 @@
  * Reuses existing primitives from handlers (parseGitDiff, blast radius BFS).
  */
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import type { Node } from '../graph/types.js';
 import { NodeType, RelationshipType } from '../graph/types.js';
 import type { KnowledgeGraph } from '../graph/graph.js';
@@ -63,28 +63,40 @@ interface ReviewResult {
 
 // ─── Git Utilities ──────────────────────────────────────────────
 
-function parseGitDiff(projectRoot: string, scope: string, base: string): DiffHunk[] {
-  let diffCmd: string;
+/** Git refs allowed from caller input. Anything outside this set could break out
+ *  of an argv element or smuggle shell-bait downstream, so we reject it loudly.
+ *  (recon-brain-recall-review #2) */
+const SAFE_GIT_REF = /^[A-Za-z0-9._/-]+$/;
 
+/** Throw on any caller-supplied git ref that is not a plain ref name. */
+export function assertSafeGitRef(ref: string): void {
+  if (!SAFE_GIT_REF.test(ref)) {
+    throw new Error(`Unsafe git ref rejected: ${JSON.stringify(ref)}`);
+  }
+}
+
+/** argv for `git diff` over a scope — the ref lands as ONE element, never a string. */
+function diffArgs(scope: string, base: string, tail: string[]): string[] {
   switch (scope) {
     case 'staged':
-      diffCmd = 'git diff --cached --unified=0';
-      break;
+      return ['diff', '--cached', ...tail];
     case 'unstaged':
-      diffCmd = 'git diff --unified=0';
-      break;
+      return ['diff', ...tail];
     case 'branch':
-      diffCmd = `git diff ${base}...HEAD --unified=0`;
-      break;
+      return ['diff', `${base}...HEAD`, ...tail];
     case 'all':
     default:
-      diffCmd = 'git diff HEAD --unified=0';
-      break;
+      return ['diff', 'HEAD', ...tail];
   }
+}
 
+function parseGitDiff(projectRoot: string, scope: string, base: string): DiffHunk[] {
   let output: string;
   try {
-    output = execSync(diffCmd, { cwd: projectRoot, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
+    // execFileSync = argv array, NO shell → `base` can never inject a command.
+    output = execFileSync('git', diffArgs(scope, base, ['--unified=0']), {
+      cwd: projectRoot, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024,
+    });
   } catch {
     return [];
   }
@@ -115,26 +127,10 @@ function parseGitDiff(projectRoot: string, scope: string, base: string): DiffHun
 }
 
 function getChangedFiles(projectRoot: string, scope: string, base: string): string[] {
-  let cmd: string;
-
-  switch (scope) {
-    case 'staged':
-      cmd = 'git diff --cached --name-only';
-      break;
-    case 'unstaged':
-      cmd = 'git diff --name-only';
-      break;
-    case 'branch':
-      cmd = `git diff ${base}...HEAD --name-only`;
-      break;
-    case 'all':
-    default:
-      cmd = 'git diff HEAD --name-only';
-      break;
-  }
-
   try {
-    const output = execSync(cmd, { cwd: projectRoot, encoding: 'utf-8' });
+    const output = execFileSync('git', diffArgs(scope, base, ['--name-only']), {
+      cwd: projectRoot, encoding: 'utf-8',
+    });
     return output.trim().split('\n').filter(Boolean);
   } catch {
     return [];
@@ -143,7 +139,7 @@ function getChangedFiles(projectRoot: string, scope: string, base: string): stri
 
 function getBranchName(): string {
   try {
-    return execSync('git branch --show-current', { encoding: 'utf-8' }).trim();
+    return execFileSync('git', ['branch', '--show-current'], { encoding: 'utf-8' }).trim();
   } catch {
     return 'unknown';
   }
@@ -166,6 +162,10 @@ export function analyzeChanges(
   const scope = options.scope || 'all';
   const base = options.base || 'main';
   const includeTests = options.includeTests ?? false;
+
+  // `base` is the only caller-supplied git ref, and it is interpolated into the
+  // diff range only in branch scope — validate it there before any git runs.
+  if (scope === 'branch') assertSafeGitRef(base);
 
   // 1. Get diff data
   const changedFiles = getChangedFiles(projectRoot, scope, base);

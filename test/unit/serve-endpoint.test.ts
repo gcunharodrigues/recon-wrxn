@@ -18,8 +18,8 @@
  * The door test does a real loopback bind on port 0 (localhost, fast) to genuinely
  * prove the concurrent door comes up + answers, rather than mocking the socket.
  */
-import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, existsSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { mkdtempSync, existsSync, writeFileSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -28,6 +28,7 @@ import {
   removeEndpoint,
   readEndpoint,
   maybeStartQueryDoor,
+  startQueryDoorSafe,
 } from '../../src/server/endpoint.js';
 import type { QueryDoorHandle } from '../../src/server/endpoint.js';
 import { KnowledgeGraph } from '../../src/graph/graph.js';
@@ -67,6 +68,13 @@ describe('discovery file helpers — the {pid,port} cross-repo contract (recon-b
     dir = tmpReconDir();
     writeEndpoint(dir, { pid: process.pid, port: 51234 });
     expect(readEndpoint(dir)).toEqual({ pid: process.pid, port: 51234 });
+  });
+
+  it('writes the endpoint file owner-only (0600) — no group/other read bits (review #4)', () => {
+    dir = tmpReconDir();
+    writeEndpoint(dir, { pid: process.pid, port: 51234 });
+    const mode = statSync(join(dir, ENDPOINT_FILE)).mode & 0o777;
+    expect(mode).toBe(0o600);
   });
 
   it('returns null (not warm) when the file is absent', () => {
@@ -154,5 +162,37 @@ describe('serveHttp config gate (recon-brain-recall-02)', () => {
     dir = tmpReconDir();
     initConfig(dir);
     expect(loadConfig(dir).serveHttp).toBe(false);
+  });
+});
+
+describe('startQueryDoorSafe — door is fail-open (recon-brain-recall-review #3)', () => {
+  const opts = { serveHttp: true, reconDir: '/x', graph: miniGraph() };
+
+  it('returns null (never throws) when the door starter REJECTS — stdio can still start', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const boom = vi.fn(async () => { throw new Error('EADDRINUSE bind failed'); });
+
+    const handle = await startQueryDoorSafe(opts, boom);
+
+    expect(handle).toBeNull();
+    expect(boom).toHaveBeenCalled();
+    expect(errSpy).toHaveBeenCalled(); // a warning was logged to stderr
+    errSpy.mockRestore();
+  });
+
+  it('returns null when the starter throws SYNCHRONOUSLY', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const boom = vi.fn(() => { throw new Error('sync FS error'); });
+
+    const handle = await startQueryDoorSafe(opts, boom as unknown as typeof maybeStartQueryDoor);
+
+    expect(handle).toBeNull();
+    errSpy.mockRestore();
+  });
+
+  it('passes the real handle through on success', async () => {
+    const fake = { port: 4321, close: vi.fn() };
+    const handle = await startQueryDoorSafe(opts, async () => fake);
+    expect(handle).toBe(fake);
   });
 });

@@ -38,10 +38,12 @@ function endpointPath(reconDir: string): string {
   return join(reconDir, ENDPOINT_FILENAME);
 }
 
-/** Announce the live endpoint. Ensures the index dir exists first. */
+/** Announce the live endpoint. Ensures the index dir exists first. The file is
+ *  created owner-read/write only (0600) so a co-located user cannot read the live
+ *  port — defense-in-depth with the kernel-side ownership check (review #4). */
 export function writeEndpoint(reconDir: string, endpoint: ServeEndpoint): void {
   mkdirSync(reconDir, { recursive: true });
-  writeFileSync(endpointPath(reconDir), JSON.stringify(endpoint), 'utf-8');
+  writeFileSync(endpointPath(reconDir), JSON.stringify(endpoint), { encoding: 'utf-8', mode: 0o600 });
 }
 
 /** Best-effort removal — a missing file or transient FS error never throws. */
@@ -144,4 +146,25 @@ export async function maybeStartQueryDoor(opts: {
       }
     },
   };
+}
+
+/**
+ * Fail-open wrapper around maybeStartQueryDoor (recon-brain-recall-review #3).
+ *
+ * The query door is a best-effort convenience — it must NEVER stop serve from
+ * starting its ESSENTIAL stdio transport. A bind/listen/FS error (EADDRINUSE,
+ * EACCES, a watch failure …) is logged to stderr and swallowed so serve continues
+ * stdio-only (door = null). The `starter` seam is injectable for testing.
+ */
+export async function startQueryDoorSafe(
+  opts: Parameters<typeof maybeStartQueryDoor>[0],
+  starter: typeof maybeStartQueryDoor = maybeStartQueryDoor,
+): Promise<QueryDoorHandle | null> {
+  try {
+    return await starter(opts);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[recon] query door failed to start (${msg}); continuing stdio-only.`);
+    return null;
+  }
 }

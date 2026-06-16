@@ -21,7 +21,7 @@ import cors from 'cors';
 import type { KnowledgeGraph } from '../graph/graph.js';
 import type { VectorStoreSource } from '../mcp/server.js';
 import { RECON_TOOLS } from '../mcp/tools.js';
-import { handleToolCall, findStructured } from '../mcp/handlers.js';
+import { handleToolCall, findStructured, explainStructured } from '../mcp/handlers.js';
 
 import {
   getResourceDefinitions,
@@ -30,6 +30,15 @@ import {
 } from '../mcp/resources.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * The HTTP door (and the legacy --http dashboard) expose ONLY these two read-only
+ * tools — the only ones the kernel recall hook + `wrxn brain query --neighbors` use.
+ * Every other tool name is refused with 403 BEFORE reaching handleToolCall, keeping
+ * recon_changes (a git shell-out) and the other mutating/heavier tools off the HTTP
+ * surface entirely (recon-brain-recall-review, finding #1).
+ */
+const DOOR_TOOLS = new Set(['recon_find', 'recon_explain']);
 
 export interface HttpServerOptions {
   port: number;
@@ -92,6 +101,15 @@ export function createApp(options: HttpServerOptions): express.Express {
     const { name } = req.params;
     const args = req.body as Record<string, unknown> | undefined;
 
+    // Route allowlist: only the two read-only tools are reachable; anything else is
+    // refused here, before handleToolCall ever runs (recon-brain-recall-review #1).
+    if (!DOOR_TOOLS.has(name)) {
+      res.status(403).json({
+        error: `Tool '${name}' is not available on the HTTP door (allowed: recon_find, recon_explain).`,
+      });
+      return;
+    }
+
     // Resolve the store through the live getter (when one was passed) so a mid-session
     // embedding hot-swap is seen on THIS request — not a by-value snapshot captured at
     // createApp (recon-brain-recall-01). Mirrors the stdio CallTool resolution.
@@ -104,6 +122,14 @@ export function createApp(options: HttpServerOptions): express.Express {
       if (name === 'recon_find') {
         const { result, hits } = await findStructured(args, graph, vs);
         res.json({ result, hits });
+        return;
+      }
+      // recon_explain mirrors the find door: structured `neighbors` (the caller/callee/
+      // import/… graph the `--neighbors` view reads) ride ALONGSIDE the markdown, which
+      // stays byte-identical to the stdio output (recon-brain-recall-review #5).
+      if (name === 'recon_explain') {
+        const { result, neighbors } = explainStructured(args, graph);
+        res.json({ result, neighbors });
         return;
       }
       const result = await handleToolCall(

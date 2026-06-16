@@ -134,33 +134,31 @@ describe('POST /api/tools/:name', () => {
     expect(res.body.result).toContain('handler/user.go');
   });
 
-  it('executes recon_impact and returns blast radius', async () => {
+  it('rejects recon_impact with 403 (not on the door allowlist)', async () => {
     const res = await request(app)
       .post('/api/tools/recon_impact')
       .send({ target: 'FindUser', direction: 'upstream' });
 
-    expect(res.status).toBe(200);
-    expect(res.body.result).toContain('FindUser');
-    expect(res.body.result).toContain('GetUser'); // Caller
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBeDefined();
   });
 
-  it('executes recon_map and returns response', async () => {
+  it('rejects recon_map with 403 (not on the door allowlist)', async () => {
     const res = await request(app)
       .post('/api/tools/recon_map')
       .send({});
 
-    expect(res.status).toBe(200);
-    expect(res.body.result).toBeDefined();
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBeDefined();
   });
 
-  it('returns structured error for unknown tool', async () => {
+  it('rejects an unknown tool with 403 (not on the door allowlist)', async () => {
     const res = await request(app)
       .post('/api/tools/nonexistent_tool')
       .send({});
 
-    expect(res.status).toBe(200);
-    const parsed = JSON.parse(res.body.result);
-    expect(parsed.error).toBe('unknown_tool');
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBeDefined();
   });
 
   it('returns structured error for missing required params', async () => {
