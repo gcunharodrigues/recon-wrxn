@@ -260,6 +260,28 @@ export function createApp(options: HttpServerOptions): express.Express {
     });
   });
 
+  // ─── Body-parse error handler (must be registered AFTER the routes) ──
+  // express.json() throws a SyntaxError BEFORE any handler runs when the request
+  // body is malformed JSON. Without this, express's default path answers 400 but
+  // logs the full stack to stderr — serve's MCP-client log (recon-brain-recall-06).
+  // Convert ONLY that parse failure to a clean JSON 400; everything else falls
+  // through to express's default error handling untouched.
+  app.use((
+    err: unknown,
+    _req: express.Request,
+    res: express.Response,
+    next: express.NextFunction,
+  ) => {
+    if (
+      err instanceof SyntaxError &&
+      (err as { type?: string }).type === 'entity.parse.failed'
+    ) {
+      res.status(400).json({ error: 'Invalid JSON body' });
+      return;
+    }
+    next(err);
+  });
+
   return app;
 }
 

@@ -40,6 +40,25 @@ describe('assertSafeGitRef (recon-brain-recall-review #2)', () => {
     expect(() => assertSafeGitRef('main | cat')).toThrow();
     expect(() => assertSafeGitRef('')).toThrow();
   });
+
+  // The allowlist is defense-in-depth (execFileSync = no shell), so it should not
+  // reject legitimate git revision syntax (recon-brain-recall-review #2 widening).
+  it('accepts git revision syntax, underscores and @{...}', () => {
+    expect(() => assertSafeGitRef('HEAD~1')).not.toThrow();
+    expect(() => assertSafeGitRef('HEAD^')).not.toThrow();
+    expect(() => assertSafeGitRef('@{u}')).not.toThrow();
+    expect(() => assertSafeGitRef('origin/feature_branch')).not.toThrow();
+    expect(() => assertSafeGitRef('release/1.2.3')).not.toThrow();
+  });
+
+  it('still rejects shell metacharacters and whitespace after widening', () => {
+    expect(() => assertSafeGitRef('main;id')).toThrow();
+    expect(() => assertSafeGitRef('$(x)')).toThrow();
+    expect(() => assertSafeGitRef('a b')).toThrow();
+    expect(() => assertSafeGitRef('a|b')).toThrow();
+    expect(() => assertSafeGitRef('`x`')).toThrow();
+    expect(() => assertSafeGitRef('')).toThrow();
+  });
 });
 
 describe('analyzeChanges git invocation (recon-brain-recall-review #2)', () => {

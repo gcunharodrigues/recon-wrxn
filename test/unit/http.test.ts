@@ -3,7 +3,7 @@
  *
  * Tests Express routes using supertest with a mock graph.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import request from 'supertest';
 import { KnowledgeGraph } from '../../src/graph/graph.js';
 import { NodeType, RelationshipType, Language } from '../../src/graph/types.js';
@@ -178,6 +178,30 @@ describe('POST /api/tools/:name', () => {
 
     expect(res.body.result).toBeDefined();
     expect(res.body.result).not.toContain('**Next:**');
+  });
+
+  // A malformed JSON request body makes express.json() throw a body-parser
+  // SyntaxError BEFORE the handler runs. Express's default path answers 400 but
+  // logs the full stack to stderr — which is serve's MCP-client log (recon-brain-recall-06).
+  it('returns a clean 400 JSON error for a malformed JSON body, without logging a stack', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await request(app)
+        .post('/api/tools/recon_find')
+        .set('Content-Type', 'application/json')
+        .send('{bad');
+
+      expect(res.status).toBe(400);
+      expect(res.type).toBe('application/json');
+      expect(res.body.error).toBe('Invalid JSON body');
+      // the body-parser SyntaxError stack must NOT reach stderr (the log-noise finding)
+      const loggedStack = errSpy.mock.calls.some(args =>
+        args.some(a => typeof a === 'string' && a.includes('SyntaxError')),
+      );
+      expect(loggedStack).toBe(false);
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 });
 

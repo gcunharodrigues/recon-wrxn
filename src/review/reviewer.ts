@@ -63,10 +63,13 @@ interface ReviewResult {
 
 // ─── Git Utilities ──────────────────────────────────────────────
 
-/** Git refs allowed from caller input. Anything outside this set could break out
- *  of an argv element or smuggle shell-bait downstream, so we reject it loudly.
- *  (recon-brain-recall-review #2) */
-const SAFE_GIT_REF = /^[A-Za-z0-9._/-]+$/;
+/** Git refs/revisions allowed from caller input. Covers the git revision charset
+ *  (letters, digits, `. _ / - ~ ^ @ { } :`) so legitimate syntax like `HEAD~1`,
+ *  `HEAD^` and `@{upstream}` is accepted, while still rejecting whitespace and shell
+ *  metacharacters. `^` sits mid-class (a literal, not a negation) and `-` is trailing
+ *  (a literal, not a range). The call site uses execFileSync (no shell), so this is
+ *  defense-in-depth, not the primary control. (recon-brain-recall-review #2) */
+const SAFE_GIT_REF = /^[A-Za-z0-9._/@~^{}:-]+$/;
 
 /** Throw on any caller-supplied git ref that is not a plain ref name. */
 export function assertSafeGitRef(ref: string): void {
