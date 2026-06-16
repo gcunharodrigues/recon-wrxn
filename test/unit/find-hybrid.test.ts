@@ -376,6 +376,28 @@ describe('executeFindHybrid — SEMANTIC_FLOOR drops sub-floor nearest neighbors
     );
     expect(out.map(r => r.file)).toContain('docs/concept.md');
   });
+
+  it('a sub-floor semantic score does NOT suppress a node the BM25 arm matched (floor gates semantic only)', async () => {
+    // The floor's headline safety invariant: it filters ONLY the semantic arm, never
+    // the BM25 arm. On the real prose corpus 5/16 gold targets sit at cosine <0.4 and
+    // are carried by BM25 — if the floor ever gated BM25 they would vanish. Plant that
+    // case: a page that IS a BM25 hit for the query but whose vector is orthogonal
+    // (cosine 0, sub-floor). It must still surface, sourced by the BM25 arm.
+    const graph = new KnowledgeGraph();
+    const lexical = page('md:page:lexical.md', 'Lexical Page', 'docs/lexical.md');
+    graph.addNode(lexical);
+    graph.addNode(code('ts:func:noise', 'noise', 'src/noise.ts'));
+    const ranker = BM25Index.buildFromGraph(graph, {
+      [lexical.id]: 'semantic retrieval concept body', // shares the query terms → BM25 hit
+    });
+    const store = new VectorStore(3);
+    store.add(lexical.id, unitVec(3, 1), NodeType.Page); // orthogonal → cosine 0, sub-floor
+
+    const out = await executeFindHybrid(
+      graph, 'semantic retrieval concept', { limit: 5 }, store, fakeEmbed(unitVec(3, 0)), ranker,
+    );
+    expect(out.map(r => r.file)).toContain('docs/lexical.md'); // BM25 carried it despite sub-floor cosine
+  });
 });
 
 // ─── (B) Weighted RRF — a confident BM25 #1 is not displaced (hit@1 lock, P1.5 A) ──
