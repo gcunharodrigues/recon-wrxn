@@ -603,6 +603,12 @@ function handleImpact(
         : graph.getOutgoing(nodeId);
 
       for (const edge of edges) {
+        // Documentation edges (Page -DOCUMENTED_BY-> code) are not code dependencies:
+        // editing a doc does not break the code it documents. The node-gate below stops
+        // prose neighbors, but a DOCUMENTED_BY edge from a Page TARGET reaches a CODE
+        // neighbor that would pass that gate — so skip the edge type itself, keeping the
+        // blast radius code-only in both directions (qa-finding-02).
+        if (edge.type === RelationshipType.DOCUMENTED_BY) continue;
         const neighborId = direction === 'upstream' ? edge.sourceId : edge.targetId;
         if (visited.has(neighborId)) continue;
 

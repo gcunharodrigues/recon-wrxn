@@ -484,6 +484,31 @@ describe('recon_impact prose type-gate', () => {
     // the prose page must NOT leak into the blast radius
     expect(result).not.toContain('Core Architecture Guide');
   });
+
+  it('does not pull documented code into the blast radius of a prose page (downstream)', async () => {
+    // qa-finding-02: editing a doc does not "break" the code it documents.
+    // DOCUMENTED_BY (Page -> code) is a documentation link, not a code dependency,
+    // so a downstream impact on the Page must NOT traverse it into the code.
+    const g = new KnowledgeGraph();
+    g.addNode(makeNode('go:func:Core', 'CoreFn', { file: 'internal/core/core.go' }));
+    g.addNode(makeNode('md:page:doc', 'Core Architecture Guide', {
+      type: NodeType.Page,
+      file: 'docs/core.md',
+      language: Language.Markdown,
+      package: 'docs',
+      exported: false,
+    }));
+    g.addRelationship(makeRel('md:page:doc', 'go:func:Core', RelationshipType.DOCUMENTED_BY));
+
+    const result = await handleToolCall('recon_impact', {
+      target: 'Core Architecture Guide',
+      direction: 'downstream',
+    }, g);
+
+    // the documented code must NOT be reported as impacted ("WILL BREAK")
+    expect(result).not.toContain('WILL BREAK');
+    expect(result).not.toContain('CoreFn');
+  });
 });
 
 // ─── prose↔code documentation traversal (recon-prose-analyzer-06) ──
