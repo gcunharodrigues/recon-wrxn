@@ -22,10 +22,26 @@ interface PostedTask {
 class StubWorker extends EventEmitter {
   postMessage: (msg: PostedTask) => void;
   terminate = () => {};
+  private died = false;
 
   constructor(onPost: (self: StubWorker, msg: PostedTask) => void) {
     super();
     this.postMessage = (msg) => onPost(this, msg);
+  }
+
+  /**
+   * Simulate a worker death exactly once, asynchronously. A real worker_thread
+   * emits 'error'/'exit' a SINGLE time when it dies — not once per posted
+   * message. Posting N tasks to a crashing worker must therefore yield ONE
+   * death event (settleDead drains all N in-flight tasks from it). Emitting
+   * per-post would fire surplus 'error' events AFTER parseFiles legitimately
+   * detaches its death listener, and Node throws on a listener-less 'error'
+   * (→ uncaught exception, suite exit 1). Idempotent: extra posts are no-ops.
+   */
+  dieOnce(event: 'error' | 'exit', payload: Error | number): void {
+    if (this.died) return;
+    this.died = true;
+    setImmediate(() => this.emit(event, payload));
   }
 }
 
@@ -53,7 +69,7 @@ describe('TreeSitterPool worker-death resilience', () => {
   it('settles an in-flight task when its worker emits error (no hang)', async () => {
     const worker = new StubWorker((self) => {
       // Crash before ever posting a message.
-      setImmediate(() => self.emit('error', new Error('boom')));
+      self.dieOnce('error', new Error('boom'));
     });
     const pool = new TreeSitterPool(1);
     injectWorkers(pool, [worker]);
@@ -67,7 +83,7 @@ describe('TreeSitterPool worker-death resilience', () => {
 
   it('settles an in-flight task when its worker exits non-zero (no hang)', async () => {
     const worker = new StubWorker((self) => {
-      setImmediate(() => self.emit('exit', 1));
+      self.dieOnce('exit', 1);
     });
     const pool = new TreeSitterPool(1);
     injectWorkers(pool, [worker]);
@@ -78,7 +94,7 @@ describe('TreeSitterPool worker-death resilience', () => {
 
   it('drains ALL in-flight tasks on a single worker death', async () => {
     const worker = new StubWorker((self) => {
-      setImmediate(() => self.emit('error', new Error('boom')));
+      self.dieOnce('error', new Error('boom'));
     });
     const pool = new TreeSitterPool(1);
     injectWorkers(pool, [worker]);
@@ -96,7 +112,7 @@ describe('TreeSitterPool worker-death resilience', () => {
     // 2-worker pool: round-robin sends even ids to w0, odd ids to w1.
     // w0 crashes; w1 answers normally. Only w0's tasks must carry the error.
     const w0 = new StubWorker((self) => {
-      setImmediate(() => self.emit('error', new Error('boom')));
+      self.dieOnce('error', new Error('boom'));
     });
     const w1 = new StubWorker((self, msg) => {
       setImmediate(() =>
@@ -142,7 +158,7 @@ describe('TreeSitterPool worker-death resilience', () => {
 
   it('detaches per-task message listeners even when the worker dies (no leak)', async () => {
     const worker = new StubWorker((self) => {
-      setImmediate(() => self.emit('error', new Error('boom')));
+      self.dieOnce('error', new Error('boom'));
     });
     const pool = new TreeSitterPool(1);
     injectWorkers(pool, [worker]);
@@ -176,7 +192,7 @@ describe('TreeSitterPool worker-death resilience', () => {
     // Defensive: a worker that exits cleanly (code 0) without ever posting a
     // result for its in-flight task must NOT hang Promise.all.
     const worker = new StubWorker((self) => {
-      setImmediate(() => self.emit('exit', 0)); // exits 0, never answers
+      self.dieOnce('exit', 0); // exits 0, never answers
     });
     const pool = new TreeSitterPool(1);
     injectWorkers(pool, [worker]);
