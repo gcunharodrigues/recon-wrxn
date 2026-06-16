@@ -10,7 +10,7 @@
  * (2) when maxFileSize is passed, files above it ARE skipped; (3) loadConfig
  * threads the field through.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -94,4 +94,33 @@ describe('config threading (loadConfig)', () => {
     expect(loadConfig(cfgDir).maxFileSize).toBe(Infinity);
     rmSync(cfgDir, { recursive: true, force: true });
   });
+});
+
+describe('config validation: maxFileSize footguns (loadConfig)', () => {
+  // A non-positive or non-finite maxFileSize is meaningless as a byte cap:
+  // 0 / negative would skip EVERY file (silent empty index); NaN/string would
+  // silently ignore an intended cap. loadConfig coerces these to Infinity
+  // (unlimited) and warns once, so neither footgun lands silently.
+  const cases: Array<[string, unknown]> = [
+    ['zero', 0],
+    ['negative', -5],
+    ['non-numeric string', 'abc'],
+  ];
+
+  for (const [label, value] of cases) {
+    it(`coerces ${label} maxFileSize to Infinity and warns`, () => {
+      const cfgDir = mkdtempSync(join(tmpdir(), 'recon-maxsize-bad-'));
+      writeFileSync(
+        join(cfgDir, '.recon-wrxn.json'),
+        JSON.stringify({ maxFileSize: value }),
+      );
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      expect(loadConfig(cfgDir).maxFileSize).toBe(Infinity);
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      spy.mockRestore();
+      rmSync(cfgDir, { recursive: true, force: true });
+    });
+  }
 });

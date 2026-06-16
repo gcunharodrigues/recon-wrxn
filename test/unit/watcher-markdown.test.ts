@@ -114,6 +114,41 @@ describe('watcher .md add', () => {
   });
 });
 
+describe('watcher .md size cap', () => {
+  // multiformat-distill-04: the live markdown surgical path must honor a
+  // configured maxFileSize too (the source path already does). By default (the
+  // watcher built in beforeEach with no cap) a >1 MB .md is INDEXED.
+  it('indexes a >1 MB .md by default (no cap)', async () => {
+    const big = '# Huge\n\n' + 'word '.repeat(250_000); // > 1 MB
+    writeFileSync(join(root, 'docs', 'huge.md'), big);
+    await fire('docs/huge.md', 'add');
+
+    expect(graph.getNode('md:page:docs/huge.md')).toBeDefined();
+    const after = (await loadSearchText(root))!;
+    expect(after['md:page:docs/huge.md']).toBeDefined();
+  });
+
+  it('skips a .md over maxFileSize when the install configures one', async () => {
+    // A watcher built with a finite cap skips a markdown file above it.
+    const capped = new ReconWatcher(graph, [{ dir: root, repoName: 'proj' }], 50, [], root, 500_000);
+    const fireCapped = (rel: string, event: string) =>
+      (capped as unknown as {
+        processFile(abs: string, repo: string, event: string): Promise<void>;
+      }).processFile(join(root, rel), 'proj', event);
+
+    const big = '# Huge2\n\n' + 'word '.repeat(250_000); // > 500 KB cap
+    writeFileSync(join(root, 'docs', 'huge2.md'), big);
+    await fireCapped('docs/huge2.md', 'add');
+    capped.stop();
+
+    expect(graph.getNode('md:page:docs/huge2.md')).toBeUndefined();
+    const after = (await loadSearchText(root))!;
+    expect(after['md:page:docs/huge2.md']).toBeUndefined();
+    // a normal file beside it is untouched
+    expect(after['md:page:docs/b.md']).toBeDefined();
+  });
+});
+
 describe('watcher .md unlink', () => {
   it('removes the file\'s prose nodes AND snapshot entries; others survive', async () => {
     const aKeys = Object.keys((await loadSearchText(root))!).filter((k) => k.includes('docs/a.md'));

@@ -573,8 +573,23 @@ export class ReconWatcher {
 
     let freshSearchText: Record<string, string> = {};
     if (event !== 'unlink') {
-      // NOTE: no MAX_FILE_SIZE cap here — pre-existing markdown behavior, out of
-      // scope for multiformat-distill-01 (the source path below IS capped).
+      // Optional OOM escape hatch (multiformat-distill-04): when the install
+      // configures a finite maxFileSize, cap the read at it BEFORE reading so a
+      // watcher event on an oversized markdown file can't OOM the long-lived
+      // process. DEFAULTS to unlimited (no cap), matching the walkers + source
+      // path. Over-cap (or a vanished file) → treat as removal: nodes already
+      // gone, just prune the snapshot.
+      if (Number.isFinite(this.maxFileSize)) {
+        try {
+          if (statSync(absPath).size > this.maxFileSize) {
+            await this.updateSearchTextSnapshot(staleKeys, {});
+            return;
+          }
+        } catch {
+          await this.updateSearchTextSnapshot(staleKeys, {});
+          return;
+        }
+      }
       let content: string;
       try {
         content = readFileSync(absPath, 'utf-8');

@@ -82,7 +82,19 @@ export function loadConfig(projectRoot: string): Required<ReconConfig> {
   try {
     const raw = readFileSync(configPath, 'utf-8');
     const parsed = JSON.parse(raw) as ReconConfig;
-    return { ...DEFAULTS, ...parsed };
+    const merged = { ...DEFAULTS, ...parsed };
+    // A byte cap only makes sense as a positive finite number. A non-positive
+    // value (0/negative) would skip EVERY file → silent empty index; a NaN/
+    // string would silently ignore an intended cap. Coerce either footgun to
+    // Infinity (unlimited) and warn once so it never lands silently.
+    if (typeof merged.maxFileSize !== 'number' || !(merged.maxFileSize > 0)) {
+      console.error(
+        `[recon] Warning: ignoring invalid maxFileSize in ${CONFIG_FILENAME} ` +
+          `(must be a positive number); treating as unlimited`,
+      );
+      merged.maxFileSize = Infinity;
+    }
+    return merged;
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error(`[recon] Warning: invalid ${CONFIG_FILENAME}: ${msg}`);
