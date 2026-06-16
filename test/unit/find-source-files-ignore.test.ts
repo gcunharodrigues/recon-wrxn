@@ -26,6 +26,9 @@ beforeAll(() => {
   writeFileSync(join(root, 'projects', 'site', 'dup.ts'), 'export const b = 2;\n');
   writeFileSync(join(root, 'docs', 'legacy', 'old.ts'), 'export const c = 3;\n');
   writeFileSync(join(root, 'docs', 'keep.ts'), 'export const d = 4;\n');
+  // Transient tool-dump dir — must be pruned by the shared IGNORE_DIRS set.
+  mkdirSync(join(root, '.playwright-mcp'), { recursive: true });
+  writeFileSync(join(root, '.playwright-mcp', 'dump.ts'), 'export const e = 5;\n');
 });
 
 afterAll(() => {
@@ -43,6 +46,10 @@ describe('findSourceFiles ignore pruning', () => {
       'projects/site/dup.ts',
       'src/app.ts',
     ]);
+  });
+
+  it('prunes a .playwright-mcp transient dump dir via the shared IGNORE_DIRS', () => {
+    expect(rels().some((p) => p.startsWith('.playwright-mcp/'))).toBe(false);
   });
 
   it('prunes a top-level subtree by name', () => {

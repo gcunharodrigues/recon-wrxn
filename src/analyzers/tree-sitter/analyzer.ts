@@ -13,17 +13,11 @@ import { getLanguageForFile, isLanguageAvailable, getAvailableLanguages } from '
 import { extractFromFile, buildGraphFromExtractions } from './extractor.js';
 import type { FileExtractionResult } from './extractor.js';
 import { hashContent } from '../../utils/hash.js';
+import { IGNORE_DIRS } from '../ignore.js';
 
 // ─── Ignore patterns ────────────────────────────────────────────
-
-const IGNORE_DIRS = new Set([
-  'node_modules', '.git', '.recon-wrxn', '.reference', 'vendor', 'target',
-  'build', 'dist', 'out', '.venv', 'venv', '__pycache__', '.mypy_cache',
-  '.pytest_cache', '.cargo', 'bin', 'obj', '.gradle', '.idea',
-  // Noise dot-dirs: kept skipped now that the blanket `startsWith('.')` skip is gone
-  // (see findSourceFiles). These hold tooling/runtime/CI state, not source.
-  '.vscode', '.github', '.husky', '.next', '.turbo', '.cache', '.aiox',
-]);
+// IGNORE_DIRS is the shared single source of truth (../ignore) — all walkers
+// (markdown, source, code) prune the same dirs, no drift.
 
 const MAX_FILE_SIZE = 1_000_000; // 1 MB
 

@@ -2,10 +2,9 @@
  * Shared walker selectivity — the single source of truth for what the
  * non-code analyzers (markdown + source) treat as NOISE.
  *
- * Consolidates the IGNORE_DIRS set that was duplicated across the markdown and
- * source walkers (multiformat-distill-03): one set, imported by both, so prose
- * and source always agree on what is skipped. The tree-sitter (code) analyzer
- * keeps its own copy — it walks a different file class.
+ * Consolidates the IGNORE_DIRS set that was duplicated across the markdown,
+ * source, and tree-sitter (code) walkers (multiformat-distill-03): one set,
+ * imported by all three, so every walker agrees on what is skipped — no drift.
  */
 
 /**
@@ -24,13 +23,17 @@ export const IGNORE_DIRS = new Set([
 ]);
 
 /**
- * True for machine-generated dependency lockfiles. Slice 02 indexes .json/.yaml
- * as Source nodes, which would otherwise pull these huge generated files into
- * the graph. Skips `pnpm-lock.yaml` and the `*-lock.json` shape (covers
- * `package-lock.json`). `yarn.lock` needs no rule — `.lock` is not a connected
- * format, so it is never indexed in the first place.
+ * Real machine-generated dependency lockfiles, by EXACT name. Slice 02 indexes
+ * .json/.yaml as Source nodes, which would otherwise pull these huge generated
+ * files into the graph. An explicit allowlist (not a `*-lock.json` glob) keeps
+ * the slice invariant — authored .json/.yml still index, no editorial judgment:
+ * an authored `my-data-lock.json` is NOT a lockfile and must be kept, while a
+ * real generated `npm-shrinkwrap.json` (which the glob missed) must be skipped.
+ * `yarn.lock` needs no entry — `.lock` is not a connected format, so it is never
+ * indexed in the first place.
  */
+const LOCKFILE_NAMES = new Set(['package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml']);
+
 export function isLockfile(name: string): boolean {
-  const lower = name.toLowerCase();
-  return lower === 'pnpm-lock.yaml' || lower.endsWith('-lock.json');
+  return LOCKFILE_NAMES.has(name.toLowerCase());
 }
