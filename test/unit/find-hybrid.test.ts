@@ -24,7 +24,10 @@ import {
 } from '../../src/mcp/find.js';
 import type { QueryStrategy } from '../../src/mcp/find.js';
 import { BM25Index } from '../../src/search/bm25.js';
+import type { BM25Result } from '../../src/search/bm25.js';
 import { VectorStore } from '../../src/search/vector-store.js';
+import type { VectorSearchResult } from '../../src/search/vector-store.js';
+import { mergeWithRRF } from '../../src/search/hybrid-search.js';
 
 // ─── Fixture builders ────────────────────────────────────────────
 
@@ -323,5 +326,92 @@ describe('recon_find handler — vectorStore forwarding + BM25 fallback (AC wiri
       store,
     );
     expect(out).toContain('Doc Sync Pattern');
+  });
+});
+
+// ─── (A) Relevance floor — gibberish no longer backfills (qa-finding-03, P1.5 A) ──
+
+describe('executeFindHybrid — SEMANTIC_FLOOR drops sub-floor nearest neighbors (P1.5 slice A)', () => {
+  // vectorStore.search returns the k nearest neighbors REGARDLESS of cosine, so a
+  // gibberish query (no BM25 match, no truly-similar prose) used to backfill the
+  // pool with low-cosine neighbors and never say "No results" (qa-finding-03). The
+  // floor drops every semantic hit below SEMANTIC_FLOOR before fusion, so such a
+  // query fuses to empty — while a genuine (high-cosine) match still survives.
+
+  it('a gibberish fulltext query with only sub-floor (orthogonal) prose vectors → []', async () => {
+    const graph = new KnowledgeGraph();
+    const widget = page('md:page:widget.md', 'Widget Page', 'docs/widget.md');
+    graph.addNode(widget);
+    graph.addNode(code('ts:func:noise', 'noise', 'src/noise.ts'));
+    const ranker = BM25Index.buildFromGraph(graph, {
+      [widget.id]: 'a page entirely about widgets and gadgets',
+    });
+    const store = new VectorStore(3);
+    // Orthogonal to the query embedding → cosine 0, below any positive floor.
+    store.add(widget.id, unitVec(3, 1), NodeType.Page);
+
+    // 3 words → fulltext; zero lexical overlap with the widget body → BM25 empty.
+    const GIBBERISH = 'xylophone zeppelin quasar';
+    const out = await executeFindHybrid(
+      graph, GIBBERISH, { limit: 50 }, store, fakeEmbed(unitVec(3, 0)), ranker,
+    );
+    expect(out).toEqual([]); // no backfill — qa-finding-03 closed
+  });
+
+  it('a real conceptual query whose target vector is above floor is still retrieved', async () => {
+    const graph = new KnowledgeGraph();
+    const target = page('md:page:concept.md', 'Concept Page', 'docs/concept.md');
+    graph.addNode(target);
+    graph.addNode(code('ts:func:noise', 'noise', 'src/noise.ts'));
+    // Body shares NO term with the query → BM25 misses it; only the vector arm can
+    // surface it, so this proves the floor does not kill a genuine semantic match.
+    const ranker = BM25Index.buildFromGraph(graph, {
+      [target.id]: 'an orthogonal body about widgets and gadgets',
+    });
+    const store = new VectorStore(3);
+    store.add(target.id, unitVec(3, 0), NodeType.Page); // cosine 1.0 with query → above floor
+
+    const out = await executeFindHybrid(
+      graph, 'semantic retrieval concept', { limit: 5 }, store, fakeEmbed(unitVec(3, 0)), ranker,
+    );
+    expect(out.map(r => r.file)).toContain('docs/concept.md');
+  });
+});
+
+// ─── (B) Weighted RRF — a confident BM25 #1 is not displaced (hit@1 lock, P1.5 A) ──
+
+describe('mergeWithRRF — weighted RRF protects a confident BM25 #1 (P1.5 slice A)', () => {
+  // `target` is the confident BM25 #1 with no semantic signal. `decoy` is a
+  // MEDIOCRE BM25 match (ranked far down) that happens to be semantic #1. Under
+  // EQUAL-weight RRF the decoy's full semantic term rides it above the BM25 #1 —
+  // the hit@1 regression. Down-weighting the semantic arm (default 0.5) keeps the
+  // confident #1 on top. mergeWithRRF is the seam executeFindHybrid fuses through
+  // (with these same defaults), so locking it here locks the end-to-end behavior.
+  //
+  // DEVIATION FROM SPEC SKETCH: the spec sketched the decoy at "BM25 #2", but under
+  // RRF_K=60 a literal #2 is a STRONG lexical match fusion legitimately promotes,
+  // and NO semanticWeight in (0,1] with bm25Weight=1.0 lets a BM25 #1 outrank a
+  // (#2 + semantic #1) item — that needs semanticWeight < 1/62 ≈ 0.016, which guts
+  // the semantic arm. The regression the change targets is a *mediocre* (far-down)
+  // BM25 item riding semantic rank, so the decoy is planted mediocre-in-BM25 —
+  // matching the spec's own prose ("a both-list item only mediocre in BM25").
+  function planted(): { bm25: BM25Result[]; semantic: VectorSearchResult[] } {
+    const bm25: BM25Result[] = [{ nodeId: 'target', score: 50 }]; // confident BM25 #1
+    for (let i = 0; i < 100; i++) bm25.push({ nodeId: `noise${i}`, score: 40 - i * 0.1 });
+    bm25.push({ nodeId: 'decoy', score: 1 }); // mediocre BM25 (rank ~102), far down
+    const semantic: VectorSearchResult[] = [{ nodeId: 'decoy', score: 0.95 }]; // semantic #1
+    return { bm25, semantic };
+  }
+
+  it('OLD equal-weight RRF lets the both-list decoy displace the BM25 #1 (regression)', () => {
+    const { bm25, semantic } = planted();
+    const equal = mergeWithRRF(bm25, semantic, 200, 1.0, 1.0);
+    expect(equal[0].nodeId).toBe('decoy'); // the regression: confident #1 demoted
+  });
+
+  it('weighted RRF (default semanticWeight) keeps the confident BM25 #1 first', () => {
+    const { bm25, semantic } = planted();
+    const weighted = mergeWithRRF(bm25, semantic, 200); // defaults: bm25 1.0, semantic 0.5
+    expect(weighted[0].nodeId).toBe('target'); // hit@1 recovered
   });
 });

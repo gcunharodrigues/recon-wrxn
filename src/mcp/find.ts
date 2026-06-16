@@ -451,6 +451,18 @@ export function executeFind(
  * type/limit. `ranker.search` returns `{nodeId,score}[]`, structurally a
  * `BM25Result`, so it feeds `mergeWithRRF` directly.
  */
+/**
+ * TUNABLE — minimum cosine similarity a semantic hit must clear to enter fusion
+ * (P1.5 slice A). VectorSearchResult.score is cosine similarity in [0,1], and
+ * vectorStore.search returns the k nearest neighbors REGARDLESS of similarity, so a
+ * gibberish query (no BM25 match, no truly-similar prose) backfills the pool with
+ * low-cosine neighbors and "No results" never happens (qa-finding-03). Dropping
+ * every semantic hit below this floor BEFORE fusion means such a query fuses to
+ * empty → "No results", while a genuine conceptual match (high cosine) is retained.
+ * Starting value; the main thread validates/tunes it against the real corpus.
+ */
+const SEMANTIC_FLOOR = 0.3;
+
 export async function executeFindHybrid(
   graph: KnowledgeGraph,
   query: string,
@@ -484,7 +496,12 @@ export async function executeFindHybrid(
       nodeType: [NodeType.Page, NodeType.Section],
     });
 
-    const fused = mergeWithRRF(bm25Results, semanticResults, pool);
+    // Relevance floor: drop near-neighbors below SEMANTIC_FLOOR so a query with no
+    // above-floor semantic match (and no BM25 match) fuses to empty instead of
+    // backfilling the pool with irrelevant nearest neighbors (qa-finding-03).
+    const flooredSemantic = semanticResults.filter(r => r.score >= SEMANTIC_FLOOR);
+
+    const fused = mergeWithRRF(bm25Results, flooredSemantic, pool);
 
     const results: FindResult[] = [];
     for (const { nodeId } of fused) {

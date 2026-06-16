@@ -35,18 +35,27 @@ export interface HybridSearchResult {
 /**
  * Merge BM25 and vector search results using Reciprocal Rank Fusion.
  * Items found by both methods get boosted scores.
+ *
+ * `bm25Weight` / `semanticWeight` are TUNABLE per-arm weights (P1.5 slice A): each
+ * arm contributes `weight * 1/(RRF_K + rank)`. Down-weighting the semantic arm
+ * (default 0.5) makes a confident BM25 #1 harder to displace by a both-list item
+ * that is only mediocre in BM25, recovering the hit@1 the equal-weight fusion
+ * regressed. New optional params with defaults keep existing callers unchanged; the
+ * main thread validates/tunes the values against the real corpus out-of-band.
  */
 export function mergeWithRRF(
   bm25Results: BM25Result[],
   semanticResults: VectorSearchResult[],
   limit: number = 20,
+  bm25Weight: number = 1.0,
+  semanticWeight: number = 0.5,
 ): HybridSearchResult[] {
   const merged = new Map<string, HybridSearchResult>();
 
   // Process BM25 results
   for (let i = 0; i < bm25Results.length; i++) {
     const r = bm25Results[i];
-    const rrfScore = 1 / (RRF_K + i + 1);
+    const rrfScore = bm25Weight * (1 / (RRF_K + i + 1));
 
     merged.set(r.nodeId, {
       nodeId: r.nodeId,
@@ -59,7 +68,7 @@ export function mergeWithRRF(
   // Process semantic results and merge
   for (let i = 0; i < semanticResults.length; i++) {
     const r = semanticResults[i];
-    const rrfScore = 1 / (RRF_K + i + 1);
+    const rrfScore = semanticWeight * (1 / (RRF_K + i + 1));
 
     const existing = merged.get(r.nodeId);
     if (existing) {
