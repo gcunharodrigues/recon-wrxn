@@ -67,6 +67,15 @@ const STRUCTURAL_KEYWORDS = [
   'entry point',
 ] as const;
 
+// Words that open a natural-language QUESTION. A query led by one of these (or
+// containing '?') is conceptual, so a lone structural keyword inside it (e.g.
+// "orphan" in "why is orphan analysis unreliable") must not divert it to the
+// structural strategy — it belongs in fulltext/hybrid retrieval.
+const INTERROGATIVES: ReadonlySet<string> = new Set([
+  'how', 'why', 'what', 'where', 'when', 'who', 'which',
+  'does', 'do', 'is', 'are', 'can', 'should', 'explain', 'describe',
+]);
+
 // ─── Classification ──────────────────────────────────────────────
 
 /**
@@ -90,6 +99,7 @@ function countStructuralKeywords(query: string): number {
  * Rules (evaluated in order):
  *  1. Contains `*` or `?`                             → pattern
  *  2. Single token that looks like code                → exact
+ *  2b. Interrogative-led question + <2 structural kw   → fulltext
  *  3. 2+ structural keywords                           → structural
  *  4. 1 structural keyword + 3+ words total            → structural
  *  5. Otherwise                                        → fulltext
@@ -120,6 +130,16 @@ export function classifyQuery(query: string): QueryStrategy {
   // Count structural keywords
   const kwCount = countStructuralKeywords(trimmed);
   const wordCount = words.length;
+
+  // Rule 2b: a conceptual QUESTION (interrogative-led or '?') with a weak
+  // structural signal (<2 keywords) is natural language → fulltext, even when it
+  // happens to contain one structural keyword (e.g. "why is … orphan analysis …"
+  // trips "orphan"). The <2 guard preserves a genuinely structural question
+  // ("what are the exported functions with no callers" = 2 kw stays structural).
+  const isQuestion = INTERROGATIVES.has(words[0].toLowerCase()) || trimmed.includes('?');
+  if (isQuestion && kwCount < 2) {
+    return 'fulltext';
+  }
 
   // Rule 3: 2+ structural keywords → structural
   if (kwCount >= 2) {
