@@ -35,6 +35,7 @@ export enum NodeType {
   Trait = 'Trait',
   Page = 'Page',          // Prose: one whole markdown file
   Section = 'Section',    // Prose: one heading + the body beneath it (primary retrieval unit)
+  Source = 'Source',      // Raw source file (html/txt → full searchable; pdf/docx/pptx/xlsx → minimal node, path only)
 }
 
 export enum RelationshipType {
@@ -67,6 +68,13 @@ export enum Language {
   Swift = 'swift',
   JavaScript = 'javascript',
   Markdown = 'markdown',
+  // Multi-format Source files (multiformat-distill-01). text-native + minimal binary.
+  Html = 'html',
+  Text = 'text',
+  Pdf = 'pdf',
+  Docx = 'docx',
+  Pptx = 'pptx',
+  Xlsx = 'xlsx',
 }
 
 // ─── Node ───────────────────────────────────────────────────────

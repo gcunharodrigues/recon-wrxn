@@ -45,6 +45,15 @@ const LANG_PREFIX: Record<Language, string> = {
   [Language.Swift]: 'swift',
   [Language.JavaScript]: 'js',
   [Language.Markdown]: 'md',
+  // Multi-format Source langs (multiformat-distill-01): the Source analyzer mints
+  // its own `source:<file>` ids, so these prefixes are unused by tree-sitter —
+  // present only to keep this Record<Language> exhaustive.
+  [Language.Html]: 'html',
+  [Language.Text]: 'txt',
+  [Language.Pdf]: 'pdf',
+  [Language.Docx]: 'docx',
+  [Language.Pptx]: 'pptx',
+  [Language.Xlsx]: 'xlsx',
 };
 
 // ─── Capture → NodeType Mapping ─────────────────────────────────

@@ -33,10 +33,11 @@ const EMBEDDABLE_TYPES = new Set<NodeType>([
   NodeType.Module,
   NodeType.Page,
   NodeType.Section,
+  NodeType.Source,
 ]);
 
 /** Prose node types: their meaning lives in natural-language body text, not a code signature. */
-const PROSE_TYPES = new Set<NodeType>([NodeType.Page, NodeType.Section]);
+const PROSE_TYPES = new Set<NodeType>([NodeType.Page, NodeType.Section, NodeType.Source]);
 
 /**
  * Check if a node should be embedded.

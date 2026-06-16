@@ -1,0 +1,259 @@
+/**
+ * Multi-format Source Analyzer
+ *
+ * Ingests non-markdown source files into the same knowledge graph as code +
+ * prose (multiformat-distill-01). Mirrors the markdown analyzer shape: a
+ * directory walker (findSourceFiles) + a pure analyze fn (analyzeSource)
+ * returning { nodes, searchText, warnings }, with the body kept OFF the
+ * serialized node and carried in the search-text.json snapshot (the BM25 input).
+ *
+ * Two classes of file:
+ *   text-native (.html / .htm / .txt) → a full searchable Source node. HTML is
+ *       stripped to readable text; .txt is the whole file. Body → searchText.
+ *   binary (.pdf / .docx / .pptx / .xlsx) → a MINIMAL Source node (path +
+ *       filename, NO body, no parse). Just enough to be discoverable and to be a
+ *       resolvable `derived_from:` target — the searchable content arrives later
+ *       via a D-distilled wiki page (PRD §3), not here.
+ *
+ * Emits one Source node per file — id `source:<file>`. No edges in this slice.
+ */
+
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { basename, dirname, join, relative } from 'node:path';
+import { NodeType, Language } from '../graph/types.js';
+import type { Node } from '../graph/types.js';
+import type { AnalyzerWarning } from './types.js';
+
+// ─── Types ───────────────────────────────────────────────────────
+
+export interface SourceFile {
+  /** Project-relative path (POSIX separators). Used in the node id and `file`. */
+  path: string;
+  /** text-native files carry content for parsing; binary files do not. */
+  kind: 'text' | 'binary';
+  /** Lowercase extension incl. the dot, e.g. `.html`. */
+  ext: string;
+  /** Raw file content — present only for text-native files. */
+  content?: string;
+}
+
+export interface SourceAnalysisResult {
+  nodes: Node[];
+  /**
+   * nodeId → searchText (readable body). Persisted to search-text.json so the
+   * body stays OFF the served graph node while remaining the lexical input.
+   * Binary nodes have NO entry (no body was parsed).
+   */
+  searchText: Record<string, string>;
+  /** Files whose per-file analysis threw and were SKIPPED (mirrors markdown). */
+  warnings: AnalyzerWarning[];
+}
+
+// ─── Extensions ──────────────────────────────────────────────────
+
+/** Text-native: read + index the body. */
+export const TEXT_SOURCE_EXTENSIONS = new Set(['.html', '.htm', '.txt']);
+/** Binary: register a minimal node only (path, no body, no parse). */
+export const BINARY_SOURCE_EXTENSIONS = new Set(['.pdf', '.docx', '.pptx', '.xlsx']);
+/** Every extension this analyzer claims. */
+export const SOURCE_EXTENSIONS = new Set([...TEXT_SOURCE_EXTENSIONS, ...BINARY_SOURCE_EXTENSIONS]);
+
+const LANGUAGE_BY_EXT: Record<string, Language> = {
+  '.html': Language.Html,
+  '.htm': Language.Html,
+  '.txt': Language.Text,
+  '.pdf': Language.Pdf,
+  '.docx': Language.Docx,
+  '.pptx': Language.Pptx,
+  '.xlsx': Language.Xlsx,
+};
+
+// ─── File discovery ──────────────────────────────────────────────
+
+// Mirrors the markdown/tree-sitter analyzers' IGNORE_DIRS so all analyzers
+// agree on what is noise. Meaningful dot-dirs (.claude/, .wrxn/) are NOT here —
+// the wiki + dropped sources live there and must be walked.
+const IGNORE_DIRS = new Set([
+  'node_modules', '.git', '.recon-wrxn', '.reference', 'vendor', 'target',
+  'build', 'dist', 'out', '.venv', 'venv', '__pycache__', '.mypy_cache',
+  '.pytest_cache', '.cargo', 'bin', 'obj', '.gradle', '.idea',
+  '.vscode', '.github', '.husky', '.next', '.turbo', '.cache', '.aiox',
+]);
+
+// NOTE: slice 04 (decision C) owns the size cap — it removes the hard cap from
+// ALL walkers (markdown + this one) and adds an optional `maxFileSize` config.
+// Mirrors markdown.ts:92 for now; applies only to text-native reads (binary
+// files are never read, so a large binary is still registered as a minimal node).
+const MAX_FILE_SIZE = 1_000_000; // 1 MB
+
+function getExtension(path: string): string {
+  const dot = path.lastIndexOf('.');
+  return dot >= 0 ? path.slice(dot).toLowerCase() : '';
+}
+
+/**
+ * Walk a directory tree for Source files (html/htm/txt + pdf/docx/pptx/xlsx),
+ * returning each as a SourceFile. Text-native files are read into `content`;
+ * binary files carry NO content (path only). Honors IGNORE_DIRS and config
+ * path-prefix ignore patterns — same contract as findMarkdownFiles.
+ */
+export function findSourceFiles(rootDir: string, ignore: string[] = []): SourceFile[] {
+  const out: SourceFile[] = [];
+
+  const ignorePrefixes = ignore
+    .map((p) => p.replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''))
+    .filter(Boolean);
+  const isIgnoredPath = (rel: string): boolean =>
+    ignorePrefixes.some((p) => rel === p || rel.startsWith(p + '/'));
+
+  const walk = (dir: string): void => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (IGNORE_DIRS.has(entry.name)) continue;
+        const childAbs = join(dir, entry.name);
+        const childRel = relative(rootDir, childAbs).replace(/\\/g, '/');
+        if (isIgnoredPath(childRel)) continue;
+        walk(childAbs);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+
+      const ext = getExtension(entry.name);
+      if (!SOURCE_EXTENSIONS.has(ext)) continue;
+
+      const absPath = join(dir, entry.name);
+      const rel = relative(rootDir, absPath).replace(/\\/g, '/');
+
+      if (BINARY_SOURCE_EXTENSIONS.has(ext)) {
+        // Minimal node only — never read the bytes (no parse, no OOM risk).
+        out.push({ path: rel, kind: 'binary', ext });
+        continue;
+      }
+
+      // text-native: size-cap then read (the body becomes searchText).
+      try {
+        if (statSync(absPath).size > MAX_FILE_SIZE) continue;
+      } catch {
+        continue;
+      }
+      let content: string;
+      try {
+        content = readFileSync(absPath, 'utf-8');
+      } catch {
+        continue;
+      }
+      out.push({ path: rel, kind: 'text', ext, content });
+    }
+  };
+
+  walk(rootDir);
+  return out;
+}
+
+// ─── Parse helpers ───────────────────────────────────────────────
+
+/** Package grouping for a source node = its directory ('' for repo-root files). */
+function packageOf(path: string): string {
+  const dir = dirname(path);
+  return dir === '.' ? '' : dir;
+}
+
+/**
+ * Strip C0 control characters from text that becomes node.name (a filename is
+ * copied verbatim, so a raw ANSI escape could spoof the terminal when printed).
+ * Built via fromCharCode to keep raw control bytes out of this source file.
+ */
+const C0_CONTROL = new RegExp('[' + String.fromCharCode(0) + '-' + String.fromCharCode(0x1f) + ']', 'g');
+function stripControlChars(text: string): string {
+  return text.replace(C0_CONTROL, '');
+}
+
+/**
+ * Strip HTML to readable text. Drops <script>/<style> blocks (content + tags)
+ * and comments wholesale, removes every remaining tag, decodes the common named
+ * + numeric entities, and collapses whitespace. Regexes are linear (no nested
+ * quantifier over an unbounded run) so a pathological document can't backtrack.
+ */
+function stripHtml(html: string): string {
+  return html
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0*39;|&apos;/gi, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// ─── Analyzer ────────────────────────────────────────────────────
+
+function analyzeSourceFile(file: SourceFile, out: SourceAnalysisResult): void {
+  const rel = file.path;
+  const id = `source:${rel}`;
+  const language = LANGUAGE_BY_EXT[file.ext] ?? Language.Text;
+
+  if (file.kind === 'binary') {
+    // Minimal node: path + filename, NO body, no searchText entry.
+    out.nodes.push({
+      id,
+      type: NodeType.Source,
+      name: stripControlChars(basename(rel)),
+      file: rel,
+      startLine: 1,
+      endLine: 1,
+      language,
+      package: packageOf(rel),
+      exported: false,
+    });
+    return;
+  }
+
+  // text-native: parse the body OFF the node into searchText.
+  const raw = file.content ?? '';
+  const text = file.ext === '.txt' ? raw : stripHtml(raw);
+
+  out.nodes.push({
+    id,
+    type: NodeType.Source,
+    name: stripControlChars(basename(rel)),
+    file: rel,
+    startLine: 1,
+    endLine: raw.split('\n').length,
+    language,
+    package: packageOf(rel),
+    exported: false,
+  });
+
+  const body = text.trim();
+  if (body) out.searchText[id] = body;
+}
+
+/**
+ * Analyze Source files into graph nodes + a searchText snapshot. Pure: depends
+ * only on the given file contents (the walker is separate). Per-file isolation:
+ * one file that throws records a warning and is SKIPPED, never aborting the pass
+ * (mirrors analyzeMarkdown / the tree-sitter analyzer's warnings[]).
+ */
+export function analyzeSource(files: SourceFile[]): SourceAnalysisResult {
+  const out: SourceAnalysisResult = { nodes: [], searchText: {}, warnings: [] };
+  for (const file of files) {
+    try {
+      analyzeSourceFile(file, out);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      out.warnings.push({ file: file.path, reason: message.split('\n')[0] });
+    }
+  }
+  return out;
+}

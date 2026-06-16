@@ -24,6 +24,7 @@ import { initEmbedder, embedBatch, disposeEmbedder, DEFAULT_CONFIG } from '../se
 import { analyzeTreeSitter, analyzeTreeSitterParallel } from '../analyzers/tree-sitter/index.js';
 import { analyzeMarkdown, findMarkdownFiles } from '../analyzers/markdown.js';
 import type { MarkdownAnalysisResult } from '../analyzers/markdown.js';
+import { analyzeSource, findSourceFiles } from '../analyzers/source.js';
 import { resolveDocEdges } from '../analyzers/doc-edges.js';
 import { getAvailableLanguages } from '../analyzers/tree-sitter/index.js';
 import { carryOverUnchangedTreeSitter } from '../analyzers/tree-sitter/carryover.js';
@@ -90,6 +91,20 @@ async function ingestProse(
   for (const rel of mdResult.relationships) {
     graph.addRelationship(rel);
   }
+
+  // Multi-format Source files (multiformat-distill-01): html/txt → full
+  // searchable Source nodes; pdf/docx/pptx/xlsx → minimal nodes (path, no body).
+  // Same seam as prose — their body is merged into the searchText snapshot below
+  // so BM25 indexes it and embeddings (proseText) pick it up, with the body kept
+  // OFF the graph node exactly like Page/Section.
+  const sourceFiles = findSourceFiles(walkRoot, ignore);
+  const srcResult = analyzeSource(sourceFiles);
+  for (const node of srcResult.nodes) {
+    graph.addNode(node);
+  }
+  Object.assign(mdResult.searchText, srcResult.searchText);
+  mdResult.warnings.push(...srcResult.warnings);
+
   // Resolve doc→code DOCUMENTED_BY edges now that BOTH code (tree-sitter +
   // cross-language, added before this call) and the prose nodes above are in the
   // graph (recon-prose-analyzer-06). Unresolvable signals add no edge.
@@ -102,6 +117,11 @@ async function ingestProse(
   // re-embedding prose whose file is unchanged (mirrors the tree-sitter hashes).
   const fileHashes: Record<string, string> = {};
   for (const f of files) fileHashes[f.path] = hashContent(f.content);
+  // Text-native source files carry content → hash for incremental embedding
+  // freshness (binary nodes have no content/searchText, so nothing to re-embed).
+  for (const f of sourceFiles) {
+    if (f.content !== undefined) fileHashes[f.path] = hashContent(f.content);
+  }
 
   return { ...mdResult, fileHashes };
 }

@@ -52,9 +52,10 @@ export interface RuleOptions {
 export const PROSE_TYPES: ReadonlySet<NodeType> = new Set<NodeType>([
   NodeType.Page,
   NodeType.Section,
+  NodeType.Source, // raw multi-format source files (multiformat-distill-01)
 ]);
 
-/** True when a node-type is prose (a markdown Page or Section), not code. */
+/** True when a node-type is prose (markdown Page/Section or a raw Source), not code. */
 export function isProseType(type: NodeType): boolean {
   return PROSE_TYPES.has(type);
 }

@@ -18,6 +18,8 @@ import { NodeType, RelationshipType } from '../graph/types.js';
 import { extractFromFile } from '../analyzers/tree-sitter/extractor.js';
 import { getLanguageForFile, isLanguageAvailable } from '../analyzers/tree-sitter/parser.js';
 import { analyzeMarkdown } from '../analyzers/markdown.js';
+import { analyzeSource, BINARY_SOURCE_EXTENSIONS, SOURCE_EXTENSIONS } from '../analyzers/source.js';
+import type { SourceFile } from '../analyzers/source.js';
 import { saveIndex, loadSearchText, saveSearchText } from '../storage/store.js';
 import { SqliteStore } from '../storage/sqlite.js';
 import type { IndexMeta } from '../storage/types.js';
@@ -89,7 +91,8 @@ const TREE_SITTER_EXTENSIONS = new Set([
 // Prose has no tree-sitter grammar; it is handled by the standalone markdown
 // analyzer (slice 01) on a separate dispatch branch below.
 const MARKDOWN_EXTENSIONS = new Set(['.md']);
-const ALL_EXTENSIONS = new Set([...TREE_SITTER_EXTENSIONS, ...MARKDOWN_EXTENSIONS]);
+// Multi-format source (multiformat-distill-01): html/txt + minimal binary nodes.
+const ALL_EXTENSIONS = new Set([...TREE_SITTER_EXTENSIONS, ...MARKDOWN_EXTENSIONS, ...SOURCE_EXTENSIONS]);
 
 function getExtension(path: string): string {
   const dot = path.lastIndexOf('.');
@@ -280,6 +283,9 @@ export class ReconWatcher {
         if (MARKDOWN_EXTENSIONS.has(ext)) {
           // Prune the prose nodes AND the file's search-text.json entries.
           await this.surgicalUpdateMarkdown(absPath, relPath, 'unlink');
+        } else if (SOURCE_EXTENSIONS.has(ext)) {
+          // Prune the Source node + any search-text.json entry (text-native).
+          await this.surgicalUpdateSource(absPath, relPath, 'unlink');
         } else {
           const removed = this.graph.removeNodesByFile(relPath);
           if (removed > 0) {
@@ -296,6 +302,8 @@ export class ReconWatcher {
         this.surgicalUpdateTreeSitter(absPath, relPath, repoName);
       } else if (MARKDOWN_EXTENSIONS.has(ext)) {
         await this.surgicalUpdateMarkdown(absPath, relPath, event);
+      } else if (SOURCE_EXTENSIONS.has(ext)) {
+        await this.surgicalUpdateSource(absPath, relPath, event);
       }
 
       // Persist file changes to SQLite if store is available
@@ -577,6 +585,58 @@ export class ReconWatcher {
       const result = analyzeMarkdown([{ path: relPath, content }]);
       for (const node of result.nodes) this.graph.addNode(node);
       for (const rel of result.relationships) this.graph.addRelationship(rel);
+      freshSearchText = result.searchText;
+    }
+
+    await this.updateSearchTextSnapshot(staleKeys, freshSearchText);
+  }
+
+  // ─── Source Surgical Update ────────────────────────────────────
+
+  /**
+   * Surgical live update for a multi-format Source file (html/txt + binary
+   * pdf/docx/pptx/xlsx) — multiformat-distill-01. Mirrors surgicalUpdateMarkdown:
+   * drop the file's old Source node, reparse THAT ONE file, re-add it, and keep
+   * its search-text.json entry in lock-step. Text-native files carry a body →
+   * searchText; binary files are read-free minimal nodes (no snapshot entry). On
+   * unlink: drop the node + prune the snapshot. Other files are never touched.
+   */
+  private async surgicalUpdateSource(
+    absPath: string,
+    relPath: string,
+    event: string,
+  ): Promise<void> {
+    // A text-native Source node's id IS its search-text.json key. Collect every
+    // node id for this file BEFORE removal so the snapshot is pruned in lock-step
+    // (binary ids simply aren't in the snapshot → the delete is a harmless no-op).
+    const staleKeys: string[] = [];
+    for (const node of this.graph.nodes.values()) {
+      if (node.file === relPath) staleKeys.push(node.id);
+    }
+
+    this.graph.removeNodesByFile(relPath);
+
+    let freshSearchText: Record<string, string> = {};
+    if (event !== 'unlink') {
+      const ext = getExtension(absPath).toLowerCase();
+      let file: SourceFile;
+      if (BINARY_SOURCE_EXTENSIONS.has(ext)) {
+        file = { path: relPath, kind: 'binary', ext };
+      } else {
+        let content: string;
+        try {
+          content = readFileSync(absPath, 'utf-8');
+        } catch {
+          // File vanished between the event and the read — treat as a pure
+          // removal: nodes already gone, just prune the snapshot.
+          await this.updateSearchTextSnapshot(staleKeys, {});
+          return;
+        }
+        file = { path: relPath, kind: 'text', ext, content };
+      }
+
+      const result = analyzeSource([file]);
+      for (const node of result.nodes) this.graph.addNode(node);
       freshSearchText = result.searchText;
     }
 

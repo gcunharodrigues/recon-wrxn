@@ -36,6 +36,13 @@ beforeAll(() => {
     join(extDir, 'docs', 'guide.md'),
     '---\ntitle: Ext Guide\nderived_from: lib/auth.ts#validateToken\n---\n# Guide\nGuide body.\n\n## Details\nDetail text.\n',
   );
+  // Multi-format Source files (multiformat-distill-01): a text-native .html and
+  // a minimal binary .pdf, ingested at the SAME seam as prose.
+  writeFileSync(
+    join(extDir, 'docs', 'spec.html'),
+    '<html><body><h1>Spec</h1><p>Photosynthesis overview.</p></body></html>',
+  );
+  writeFileSync(join(extDir, 'docs', 'paper.pdf'), '%PDF-1.4 binary bytes');
 });
 
 afterAll(() => {
@@ -69,6 +76,26 @@ describe('indexProject ingests prose for secondary repos', () => {
     const snapshot = await loadSearchText(mainRoot, REPO);
     expect(snapshot).not.toBeNull();
     expect(snapshot!['md:page:docs/guide.md']).toContain('Guide body.');
+  });
+
+  it('ingests Source nodes (html text-native + minimal binary) at the prose seam', async () => {
+    await indexProject(extDir, mainRoot, REPO);
+
+    const stored = await loadIndex(mainRoot, REPO);
+    expect(stored).not.toBeNull();
+
+    // text-native .html → full Source node, body in the snapshot (tags stripped).
+    const html = stored!.graph.getNode('source:docs/spec.html');
+    expect(html?.type).toBe(NodeType.Source);
+    expect(html?.exported).toBe(false);
+    const snapshot = await loadSearchText(mainRoot, REPO);
+    expect(snapshot!['source:docs/spec.html']).toContain('Photosynthesis overview.');
+    expect(snapshot!['source:docs/spec.html']).not.toContain('<h1>');
+
+    // binary .pdf → minimal Source node, NO snapshot entry.
+    const pdf = stored!.graph.getNode('source:docs/paper.pdf');
+    expect(pdf?.type).toBe(NodeType.Source);
+    expect(snapshot!['source:docs/paper.pdf']).toBeUndefined();
   });
 
   it('resolves a derived_from anchor into a DOCUMENTED_BY edge to real code', async () => {

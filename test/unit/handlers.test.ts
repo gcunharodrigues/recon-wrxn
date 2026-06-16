@@ -511,6 +511,25 @@ describe('recon_impact prose type-gate', () => {
   });
 });
 
+describe('recon_map Source type-gate (multiformat-distill-01)', () => {
+  it('excludes Source nodes from language counts', async () => {
+    const g = new KnowledgeGraph();
+    g.addNode(makeNode('go:func:Core', 'CoreFn', { file: 'internal/core/core.go', language: Language.Go }));
+    g.addNode(makeNode('source:docs/page.html', 'page.html', {
+      type: NodeType.Source,
+      file: 'docs/page.html',
+      language: Language.Html,
+      package: 'docs',
+      exported: false,
+    }));
+
+    const result = await handleToolCall('recon_map', {}, g);
+
+    // the raw Source language must NOT surface in the languages breakdown
+    expect(result).not.toContain('html');
+  });
+});
+
 // ─── prose↔code documentation traversal (recon-prose-analyzer-06) ──
 
 describe('recon_explain DOCUMENTED_BY traversal', () => {
