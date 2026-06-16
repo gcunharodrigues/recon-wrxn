@@ -74,6 +74,16 @@ describe('watcher Source add', () => {
     expect(after['source:docs/new.txt']).toContain('brand new source body.');
   });
 
+  it('ingests a brand-new .json Source node with serialized key+value snapshot', async () => {
+    writeFileSync(join(root, 'docs', 'conf.json'), '{"service":"api","port":8080}');
+    await fire('docs/conf.json', 'add');
+
+    expect(graph.getNode('source:docs/conf.json')).toBeDefined();
+    const after = (await loadSearchText(root))!;
+    expect(after['source:docs/conf.json']).toContain('service');
+    expect(after['source:docs/conf.json']).toContain('8080');
+  });
+
   it('ingests a binary Source as a minimal node with NO snapshot entry', async () => {
     writeFileSync(join(root, 'docs', 'paper.pdf'), '%PDF-1.4 bytes');
     await fire('docs/paper.pdf', 'add');

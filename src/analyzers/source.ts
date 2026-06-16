@@ -8,8 +8,9 @@
  * serialized node and carried in the search-text.json snapshot (the BM25 input).
  *
  * Two classes of file:
- *   text-native (.html / .htm / .txt) → a full searchable Source node. HTML is
- *       stripped to readable text; .txt is the whole file. Body → searchText.
+ *   text-native (.html / .htm / .txt / .yml / .yaml / .json) → a full searchable
+ *       Source node. HTML is stripped to readable text; .txt is the whole file;
+ *       yaml/json are parsed + flattened to key+value tokens. Body → searchText.
  *   binary (.pdf / .docx / .pptx / .xlsx) → a MINIMAL Source node (path +
  *       filename, NO body, no parse). Just enough to be discoverable and to be a
  *       resolvable `derived_from:` target — the searchable content arrives later
@@ -20,6 +21,7 @@
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative } from 'node:path';
+import { parse as parseYaml } from 'yaml';
 import { NodeType, Language } from '../graph/types.js';
 import type { Node } from '../graph/types.js';
 import type { AnalyzerWarning } from './types.js';
@@ -52,7 +54,7 @@ export interface SourceAnalysisResult {
 // ─── Extensions ──────────────────────────────────────────────────
 
 /** Text-native: read + index the body. */
-export const TEXT_SOURCE_EXTENSIONS = new Set(['.html', '.htm', '.txt']);
+export const TEXT_SOURCE_EXTENSIONS = new Set(['.html', '.htm', '.txt', '.yml', '.yaml', '.json']);
 /** Binary: register a minimal node only (path, no body, no parse). */
 export const BINARY_SOURCE_EXTENSIONS = new Set(['.pdf', '.docx', '.pptx', '.xlsx']);
 /** Every extension this analyzer claims. */
@@ -62,6 +64,9 @@ const LANGUAGE_BY_EXT: Record<string, Language> = {
   '.html': Language.Html,
   '.htm': Language.Html,
   '.txt': Language.Text,
+  '.yml': Language.Yaml,
+  '.yaml': Language.Yaml,
+  '.json': Language.Json,
   '.pdf': Language.Pdf,
   '.docx': Language.Docx,
   '.pptx': Language.Pptx,
@@ -254,6 +259,48 @@ function stripHtml(html: string): string {
     .trim();
 }
 
+/**
+ * Flatten parsed structured data (YAML/JSON) into a flat key + value token
+ * stream so BOTH keys and scalar values are lexically searchable, with the
+ * structural punctuation ({}/[]/quotes/commas) dropped — clean BM25 input. Walks
+ * maps (emit each key, then recurse the value) and sequences (recurse each item);
+ * scalars stringify; null/undefined contribute nothing.
+ */
+function serializeData(value: unknown, parts: string[] = []): string[] {
+  if (value === null || value === undefined) return parts;
+  if (Array.isArray(value)) {
+    for (const item of value) serializeData(item, parts);
+  } else if (typeof value === 'object') {
+    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+      parts.push(key);
+      serializeData(val, parts);
+    }
+  } else {
+    parts.push(String(value));
+  }
+  return parts;
+}
+
+/**
+ * Reduce a text-native source's raw content to searchable body text per format.
+ * Structured data (yaml/json) is PARSED then flattened to key+value tokens — a
+ * malformed document throws here, which the per-file isolation in analyzeSource
+ * turns into a warning + skip (no node). .txt is whole-file; html is stripped.
+ */
+function extractText(ext: string, raw: string): string {
+  switch (ext) {
+    case '.txt':
+      return raw;
+    case '.json':
+      return serializeData(JSON.parse(raw)).join(' ');
+    case '.yml':
+    case '.yaml':
+      return serializeData(parseYaml(raw)).join(' ');
+    default:
+      return stripHtml(raw); // .html / .htm
+  }
+}
+
 // ─── Analyzer ────────────────────────────────────────────────────
 
 function analyzeSourceFile(file: SourceFile, out: SourceAnalysisResult): void {
@@ -277,9 +324,10 @@ function analyzeSourceFile(file: SourceFile, out: SourceAnalysisResult): void {
     return;
   }
 
-  // text-native: parse the body OFF the node into searchText.
+  // text-native: parse the body OFF the node into searchText. A malformed
+  // structured file (yaml/json) throws here → per-file skip + warning, no node.
   const raw = file.content ?? '';
-  const text = file.ext === '.txt' ? raw : stripHtml(raw);
+  const text = extractText(file.ext, raw);
 
   out.nodes.push({
     id,

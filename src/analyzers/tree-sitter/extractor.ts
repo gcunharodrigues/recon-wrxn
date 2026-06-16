@@ -50,6 +50,8 @@ const LANG_PREFIX: Record<Language, string> = {
   // present only to keep this Record<Language> exhaustive.
   [Language.Html]: 'html',
   [Language.Text]: 'txt',
+  [Language.Yaml]: 'yaml',
+  [Language.Json]: 'json',
   [Language.Pdf]: 'pdf',
   [Language.Docx]: 'docx',
   [Language.Pptx]: 'pptx',

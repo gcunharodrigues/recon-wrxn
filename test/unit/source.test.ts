@@ -74,6 +74,86 @@ describe('analyzeSource — .txt', () => {
   });
 });
 
+// ─── Text-native: structured data (.json) ───────────────────────
+
+describe('analyzeSource — .json', () => {
+  it('emits a Source node and serializes keys + values into searchText', () => {
+    const json = JSON.stringify({ name: 'recon', version: '6.0.0', tags: ['code', 'prose'] });
+    const files: SourceFile[] = [{ path: 'config/app.json', kind: 'text', ext: '.json', content: json }];
+
+    const { nodes, searchText } = analyzeSource(files);
+    const node = nodes.find((n) => n.file === 'config/app.json')!;
+    expect(node).toBeDefined();
+    expect(node.type).toBe(NodeType.Source);
+    expect(node.exported).toBe(false);
+    expect(node.language).toBe(Language.Json);
+    expect(node.id).toBe('source:config/app.json');
+
+    const body = searchText['source:config/app.json'];
+    expect(body).toBeDefined();
+    // keys AND values are lexically searchable
+    expect(body).toContain('name');
+    expect(body).toContain('recon');
+    expect(body).toContain('version');
+    expect(body).toContain('6.0.0');
+    expect(body).toContain('tags');
+    expect(body).toContain('prose'); // nested array value
+    // structural punctuation stripped → clean lexical text, not raw markup
+    expect(body).not.toContain('{');
+    expect(body).not.toContain('"');
+  });
+});
+
+// ─── Text-native: structured data (.yaml / .yml) ─────────────────
+
+describe('analyzeSource — .yaml / .yml', () => {
+  it('emits a Source node and serializes keys + values into searchText', () => {
+    const yaml = ['name: recon', 'nested:', '  key: deepvalue', 'list:', '  - one', '  - two', ''].join('\n');
+    const files: SourceFile[] = [
+      { path: 'ci/pipeline.yaml', kind: 'text', ext: '.yaml', content: yaml },
+      { path: 'ci/other.yml', kind: 'text', ext: '.yml', content: 'service: api\nport: 8080\n' },
+    ];
+
+    const { nodes, searchText } = analyzeSource(files);
+    const node = nodes.find((n) => n.file === 'ci/pipeline.yaml')!;
+    expect(node.type).toBe(NodeType.Source);
+    expect(node.exported).toBe(false);
+    expect(node.language).toBe(Language.Yaml);
+
+    const body = searchText['source:ci/pipeline.yaml'];
+    expect(body).toContain('name');
+    expect(body).toContain('recon');
+    expect(body).toContain('key');
+    expect(body).toContain('deepvalue'); // nested-map value
+    expect(body).toContain('one');
+    expect(body).toContain('two'); // sequence items
+
+    // .yml shares the language and is also indexed
+    expect(nodes.find((n) => n.file === 'ci/other.yml')!.language).toBe(Language.Yaml);
+    expect(searchText['source:ci/other.yml']).toContain('8080');
+  });
+
+  it('skips malformed YAML/JSON with a warning (no node), keeping the good ones', () => {
+    const files: SourceFile[] = [
+      { path: 'good.json', kind: 'text', ext: '.json', content: '{"ok": true}' },
+      { path: 'bad.json', kind: 'text', ext: '.json', content: '{ "a": 1' }, // unclosed object
+      { path: 'bad.yaml', kind: 'text', ext: '.yaml', content: 'key: [unclosed' }, // unterminated flow seq
+      { path: 'good.yaml', kind: 'text', ext: '.yaml', content: 'final: ok' },
+    ];
+
+    const result = analyzeSource(files);
+
+    const present = result.nodes.map((n) => n.file).sort();
+    expect(present).toContain('good.json');
+    expect(present).toContain('good.yaml');
+    // malformed files contribute NOTHING (atomic skip)
+    expect(present).not.toContain('bad.json');
+    expect(present).not.toContain('bad.yaml');
+    // ...but each is surfaced as a warning
+    expect(result.warnings.map((w) => w.file).sort()).toEqual(['bad.json', 'bad.yaml']);
+  });
+});
+
 // ─── Binary: minimal node ────────────────────────────────────────
 
 describe('analyzeSource — binary (pdf/docx/pptx/xlsx)', () => {

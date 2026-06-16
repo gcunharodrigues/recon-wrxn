@@ -71,6 +71,8 @@ export enum Language {
   // Multi-format Source files (multiformat-distill-01). text-native + minimal binary.
   Html = 'html',
   Text = 'text',
+  Yaml = 'yaml',
+  Json = 'json',
   Pdf = 'pdf',
   Docx = 'docx',
   Pptx = 'pptx',
