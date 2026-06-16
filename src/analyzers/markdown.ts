@@ -83,14 +83,20 @@ export interface MarkdownAnalysisResult {
 // IGNORE_DIRS is shared with the source walker (./ignore.js) so prose and
 // source agree on what is noise.
 
-const MAX_FILE_SIZE = 1_000_000; // 1 MB — match the tree-sitter walker's cap.
-
 /**
  * Walk a directory tree for `.md` files, returning each as { path, content }.
  * Markdown bypasses the tree-sitter walker (no markdown grammar), so it needs
  * its own discovery. Honors IGNORE_DIRS and config path-prefix ignore patterns.
+ *
+ * `maxFileSize` (bytes) is the OPTIONAL OOM escape hatch (multiformat-distill-04):
+ * files strictly larger are skipped. DEFAULTS to Infinity = no cap — the old hard
+ * 1 MB skip is gone, so a >1 MB doc is indexed unless an install opts into a cap.
  */
-export function findMarkdownFiles(rootDir: string, ignore: string[] = []): MarkdownFile[] {
+export function findMarkdownFiles(
+  rootDir: string,
+  ignore: string[] = [],
+  maxFileSize: number = Infinity,
+): MarkdownFile[] {
   const out: MarkdownFile[] = [];
 
   const ignorePrefixes = ignore
@@ -116,10 +122,14 @@ export function findMarkdownFiles(rootDir: string, ignore: string[] = []): Markd
         walk(childAbs);
       } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
         const absPath = join(dir, entry.name);
-        try {
-          if (statSync(absPath).size > MAX_FILE_SIZE) continue;
-        } catch {
-          continue;
+        // Only stat when a finite cap is configured — the default (unlimited)
+        // path skips the extra syscall and never excludes a file by size.
+        if (Number.isFinite(maxFileSize)) {
+          try {
+            if (statSync(absPath).size > maxFileSize) continue;
+          } catch {
+            continue;
+          }
         }
         let content: string;
         try {

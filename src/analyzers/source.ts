@@ -79,12 +79,6 @@ const LANGUAGE_BY_EXT: Record<string, Language> = {
 // IGNORE_DIRS is shared with the markdown walker (./ignore.js) so prose and
 // source agree on what is noise — including transient tool-dump dirs.
 
-// NOTE: slice 04 (decision C) owns the size cap — it removes the hard cap from
-// ALL walkers (markdown + this one) and adds an optional `maxFileSize` config.
-// Mirrors markdown.ts:92 for now; applies only to text-native reads (binary
-// files are never read, so a large binary is still registered as a minimal node).
-export const MAX_FILE_SIZE = 1_000_000; // 1 MB
-
 function getExtension(path: string): string {
   const dot = path.lastIndexOf('.');
   return dot >= 0 ? path.slice(dot).toLowerCase() : '';
@@ -95,8 +89,17 @@ function getExtension(path: string): string {
  * returning each as a SourceFile. Text-native files are read into `content`;
  * binary files carry NO content (path only). Honors IGNORE_DIRS and config
  * path-prefix ignore patterns — same contract as findMarkdownFiles.
+ *
+ * `maxFileSize` (bytes) is the OPTIONAL OOM escape hatch (multiformat-distill-04):
+ * text-native files strictly larger are skipped. DEFAULTS to Infinity = no cap —
+ * the old hard 1 MB skip is gone. Binary files are never read regardless of size
+ * (no parse, no OOM risk) so they are always registered as minimal nodes.
  */
-export function findSourceFiles(rootDir: string, ignore: string[] = []): SourceFile[] {
+export function findSourceFiles(
+  rootDir: string,
+  ignore: string[] = [],
+  maxFileSize: number = Infinity,
+): SourceFile[] {
   const out: SourceFile[] = [];
 
   const ignorePrefixes = ignore
@@ -140,11 +143,15 @@ export function findSourceFiles(rootDir: string, ignore: string[] = []): SourceF
         continue;
       }
 
-      // text-native: size-cap then read (the body becomes searchText).
-      try {
-        if (statSync(absPath).size > MAX_FILE_SIZE) continue;
-      } catch {
-        continue;
+      // text-native: optional size-cap then read (the body becomes searchText).
+      // Only stat when a finite cap is configured — the default (unlimited) path
+      // skips the extra syscall and never excludes a file by size.
+      if (Number.isFinite(maxFileSize)) {
+        try {
+          if (statSync(absPath).size > maxFileSize) continue;
+        } catch {
+          continue;
+        }
       }
       let content: string;
       try {

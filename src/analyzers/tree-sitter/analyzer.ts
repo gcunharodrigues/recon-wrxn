@@ -19,8 +19,6 @@ import { IGNORE_DIRS } from '../ignore.js';
 // IGNORE_DIRS is the shared single source of truth (../ignore) — all walkers
 // (markdown, source, code) prune the same dirs, no drift.
 
-const MAX_FILE_SIZE = 1_000_000; // 1 MB
-
 // ─── File Discovery ─────────────────────────────────────────────
 
 interface SourceFile {
@@ -29,7 +27,16 @@ interface SourceFile {
   language: Language;
 }
 
-export function findSourceFiles(rootDir: string, ignore: string[] = []): SourceFile[] {
+/**
+ * `maxFileSize` (bytes) is the OPTIONAL OOM escape hatch (multiformat-distill-04):
+ * files strictly larger are skipped. DEFAULTS to Infinity = no cap — the old hard
+ * 1 MB skip is gone, so a >1 MB source is parsed unless an install opts into a cap.
+ */
+export function findSourceFiles(
+  rootDir: string,
+  ignore: string[] = [],
+  maxFileSize: number = Infinity,
+): SourceFile[] {
   const files: SourceFile[] = [];
 
   // Path-prefix ignore patterns from config (e.g. ["projects", "docs/legacy"]).
@@ -56,7 +63,7 @@ export function findSourceFiles(rootDir: string, ignore: string[] = []): SourceF
         // Denylist only — the blanket `entry.name.startsWith('.')` skip was removed so that
         // meaningful dot-dirs (e.g. `.claude/`, `.aiox-core/`) ARE indexed. Noise dot-dirs are
         // named explicitly in IGNORE_DIRS; non-source files are still excluded by the language
-        // filter (getLanguageForFile) + MAX_FILE_SIZE below.
+        // filter (getLanguageForFile) + the optional maxFileSize cap below.
         if (IGNORE_DIRS.has(entry.name)) continue;
         const childAbs = join(dir, entry.name);
         const childRel = relative(rootDir, childAbs).replace(/\\/g, '/');
@@ -68,11 +75,14 @@ export function findSourceFiles(rootDir: string, ignore: string[] = []): SourceF
         if (!lang) continue;
         if (!isLanguageAvailable(lang)) continue;
 
-        try {
-          const stat = statSync(absPath);
-          if (stat.size > MAX_FILE_SIZE) continue;
-        } catch {
-          continue;
+        // Only stat when a finite cap is configured — the default (unlimited)
+        // path skips the extra syscall and never excludes a file by size.
+        if (Number.isFinite(maxFileSize)) {
+          try {
+            if (statSync(absPath).size > maxFileSize) continue;
+          } catch {
+            continue;
+          }
         }
 
         files.push({
@@ -122,6 +132,7 @@ export function analyzeTreeSitter(
   rootDir: string,
   previousHashes?: Record<string, string>,
   ignore: string[] = [],
+  maxFileSize: number = Infinity,
 ): TreeSitterAnalysisResult {
   const available = getAvailableLanguages();
   if (available.length === 0) {
@@ -134,7 +145,7 @@ export function analyzeTreeSitter(
     };
   }
 
-  const sourceFiles = findSourceFiles(rootDir, ignore);
+  const sourceFiles = findSourceFiles(rootDir, ignore, maxFileSize);
   const fileHashes: Record<string, string> = {};
   const languageCounts: Record<string, number> = {};
   const warnings: AnalyzerWarning[] = [];
@@ -229,6 +240,7 @@ export async function analyzeTreeSitterParallel(
   rootDir: string,
   previousHashes?: Record<string, string>,
   ignore: string[] = [],
+  maxFileSize: number = Infinity,
 ): Promise<TreeSitterAnalysisResult> {
   const available = getAvailableLanguages();
   if (available.length === 0) {
@@ -241,7 +253,7 @@ export async function analyzeTreeSitterParallel(
     };
   }
 
-  const sourceFiles = findSourceFiles(rootDir, ignore);
+  const sourceFiles = findSourceFiles(rootDir, ignore, maxFileSize);
   const fileHashes: Record<string, string> = {};
   const languageCounts: Record<string, number> = {};
   const warnings: AnalyzerWarning[] = [];
@@ -287,7 +299,7 @@ export async function analyzeTreeSitterParallel(
   // Below threshold → use sequential path
   const { WORKER_THRESHOLD, TreeSitterPool } = await import('./pool.js');
   if (filesToProcess.length < WORKER_THRESHOLD) {
-    return analyzeTreeSitter(rootDir, previousHashes, ignore);
+    return analyzeTreeSitter(rootDir, previousHashes, ignore, maxFileSize);
   }
 
   // Try parallel parsing with worker pool
@@ -297,7 +309,7 @@ export async function analyzeTreeSitterParallel(
   if (!poolStarted) {
     console.error('[recon] Worker pool unavailable, using sequential parser.');
     pool.terminate();
-    return analyzeTreeSitter(rootDir, previousHashes, ignore);
+    return analyzeTreeSitter(rootDir, previousHashes, ignore, maxFileSize);
   }
 
   console.error(`[recon] Worker pool started: ${pool.poolSize} threads for ${filesToProcess.length} files`);
@@ -356,7 +368,7 @@ export async function analyzeTreeSitterParallel(
     };
   } catch (err) {
     console.error(`[recon] Worker pool error: ${err}. Falling back to sequential.`);
-    return analyzeTreeSitter(rootDir, previousHashes, ignore);
+    return analyzeTreeSitter(rootDir, previousHashes, ignore, maxFileSize);
   } finally {
     pool.terminate();
   }

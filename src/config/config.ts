@@ -25,6 +25,12 @@ export interface ReconConfig {
   port?: number;
   /** Additional paths to ignore (beyond built-in defaults) */
   ignore?: string[];
+  /**
+   * Optional OOM escape hatch: files strictly larger than this many bytes are
+   * skipped by ALL walkers (markdown/prose, source, tree-sitter code). Defaults
+   * to unlimited (no cap) — set it per-install only if huge files OOM the index.
+   */
+  maxFileSize?: number;
   /** Cross-language edge detection config */
   crossLanguage?: {
     auto?: boolean;
@@ -50,6 +56,9 @@ const DEFAULTS: Required<ReconConfig> = {
   http: false,
   port: 3100,
   ignore: [],
+  // Infinity = no cap: any file size > Infinity is false, so nothing is skipped.
+  // JSON has no Infinity literal, so an unset field stays unlimited by default.
+  maxFileSize: Infinity,
   crossLanguage: { auto: true, routes: [], consumers: [] },
   testPatterns: ['**/*.test.*', '**/*.spec.*', '**/*_test.*', '**/__tests__/**'],
   rules: { largeFileThreshold: 30, circularDepsLevel: 'package' as const },

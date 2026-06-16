@@ -97,27 +97,35 @@ describe('watcher Source add', () => {
 });
 
 describe('watcher Source size cap', () => {
-  it('skips a text-native source over MAX_FILE_SIZE — no node, no snapshot entry', async () => {
-    const big = 'x'.repeat(1_000_001); // > 1 MB cap (MAX_FILE_SIZE = 1_000_000)
+  // multiformat-distill-04: the hard 1 MB cap is gone — by default (the watcher
+  // built in beforeEach with no maxFileSize) a >1 MB text-native source is INDEXED.
+  it('indexes a >1 MB text-native source by default (no cap)', async () => {
+    const big = 'huge ' + 'x'.repeat(1_000_001); // > 1 MB
     writeFileSync(join(root, 'docs', 'huge.txt'), big);
     await fire('docs/huge.txt', 'add');
 
-    expect(graph.getNode('source:docs/huge.txt')).toBeUndefined();
+    expect(graph.getNode('source:docs/huge.txt')).toBeDefined();
     const after = (await loadSearchText(root))!;
-    expect(after['source:docs/huge.txt']).toBeUndefined();
-    // a normal file beside it is untouched
-    expect(after['source:docs/keep.txt']).toBeDefined();
+    expect(after['source:docs/huge.txt']).toBeDefined();
   });
 
-  it('drops an existing source node when a change pushes it over the cap', async () => {
-    // a.html starts small and indexed; grow it past the cap on change
-    expect(graph.getNode('source:docs/a.html')).toBeDefined();
-    writeFileSync(join(root, 'docs', 'a.html'), 'y'.repeat(1_000_001));
-    await fire('docs/a.html', 'change');
+  it('skips a source over maxFileSize when the install configures one', async () => {
+    // A watcher built with a finite cap skips a text-native source above it.
+    const capped = new ReconWatcher(graph, [{ dir: root, repoName: 'proj' }], 50, [], root, 500_000);
+    const fireCapped = (rel: string, event: string) =>
+      (capped as unknown as {
+        processFile(abs: string, repo: string, event: string): Promise<void>;
+      }).processFile(join(root, rel), 'proj', event);
 
-    expect(graph.getNode('source:docs/a.html')).toBeUndefined();
+    writeFileSync(join(root, 'docs', 'huge2.txt'), 'x'.repeat(1_000_001)); // > 500 KB cap
+    await fireCapped('docs/huge2.txt', 'add');
+    capped.stop();
+
+    expect(graph.getNode('source:docs/huge2.txt')).toBeUndefined();
     const after = (await loadSearchText(root))!;
-    expect(after['source:docs/a.html']).toBeUndefined();
+    expect(after['source:docs/huge2.txt']).toBeUndefined();
+    // a normal file beside it is untouched
+    expect(after['source:docs/keep.txt']).toBeDefined();
   });
 });
 

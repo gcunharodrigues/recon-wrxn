@@ -81,9 +81,10 @@ async function ingestProse(
   walkRoot: string,
   saveRoot: string,
   ignore: string[],
+  maxFileSize: number,
   repoName?: string,
 ): Promise<MarkdownAnalysisResult & { fileHashes: Record<string, string> }> {
-  const files = findMarkdownFiles(walkRoot, ignore);
+  const files = findMarkdownFiles(walkRoot, ignore, maxFileSize);
   const mdResult = analyzeMarkdown(files);
   for (const node of mdResult.nodes) {
     graph.addNode(node);
@@ -97,7 +98,7 @@ async function ingestProse(
   // Same seam as prose — their body is merged into the searchText snapshot below
   // so BM25 indexes it and embeddings (proseText) pick it up, with the body kept
   // OFF the graph node exactly like Page/Section.
-  const sourceFiles = findSourceFiles(walkRoot, ignore);
+  const sourceFiles = findSourceFiles(walkRoot, ignore, maxFileSize);
   const srcResult = analyzeSource(sourceFiles);
   for (const node of srcResult.nodes) {
     graph.addNode(node);
@@ -163,7 +164,7 @@ export async function indexProject(
   let tsitterFiles = 0;
   let tsitterHashes: Record<string, string> = {};
   if (tsitterLangs.length > 0) {
-    const tsitterResult = analyzeTreeSitter(resolvedDir, undefined, extConfig.ignore);
+    const tsitterResult = analyzeTreeSitter(resolvedDir, undefined, extConfig.ignore, extConfig.maxFileSize);
     for (const node of tsitterResult.result.nodes) {
       graph.addNode(node);
     }
@@ -197,7 +198,7 @@ export async function indexProject(
   // so secondary repos get Page/Section nodes + a search-text.json snapshot too.
   // Saved under the MAIN project's repo dir; console.error (never stdout) since
   // indexProject can run inside serve's stdio auto-index.
-  const mdResult = await ingestProse(graph, resolvedDir, mainProjectRoot, extConfig.ignore, name);
+  const mdResult = await ingestProse(graph, resolvedDir, mainProjectRoot, extConfig.ignore, extConfig.maxFileSize, name);
   if (mdResult.warnings.length > 0) {
     console.error(`[recon] ${mdResult.warnings.length} markdown file(s) skipped due to errors:`);
     for (const w of mdResult.warnings) {
@@ -336,7 +337,7 @@ export async function indexCommand(options: { force?: boolean; repo?: string; em
   let tsitterHashes: Record<string, string> = {};
   if (tsitterLangs.length > 0) {
     console.log(`[recon] Analyzing with tree-sitter (${tsitterLangs.join(', ')})...`);
-    const tsitterResult = await analyzeTreeSitterParallel(projectRoot, previousHashes, config.ignore);
+    const tsitterResult = await analyzeTreeSitterParallel(projectRoot, previousHashes, config.ignore, config.maxFileSize);
 
     for (const node of tsitterResult.result.nodes) {
       graph.addNode(node);
@@ -405,7 +406,7 @@ export async function indexCommand(options: { force?: boolean; repo?: string; em
   // the graph node and carried in the searchText snapshot persisted by ingestProse
   // (shared with indexProject so secondary repos ingest the same way).
   console.log('[recon] Analyzing markdown prose...');
-  const mdResult = await ingestProse(graph, projectRoot, projectRoot, config.ignore, repoName);
+  const mdResult = await ingestProse(graph, projectRoot, projectRoot, config.ignore, config.maxFileSize, repoName);
   console.log(`[recon] Prose: ${mdResult.nodes.length} nodes, ${mdResult.relationships.length} edges`);
   if (mdResult.warnings.length > 0) {
     console.log(`[recon] ${mdResult.warnings.length} markdown file(s) skipped due to errors:`);
@@ -699,7 +700,7 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
     for (const dir of projects) {
       watchDirs.push({ dir: resolve(dir), repoName: basename(resolve(dir)).toLowerCase() });
     }
-    const watcher = new ReconWatcher(graph, watchDirs, config.watchDebounce, config.ignore, projectRoot);
+    const watcher = new ReconWatcher(graph, watchDirs, config.watchDebounce, config.ignore, projectRoot, config.maxFileSize);
     watcher.start();
   }
 

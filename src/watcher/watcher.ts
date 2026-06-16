@@ -18,7 +18,7 @@ import { NodeType, RelationshipType } from '../graph/types.js';
 import { extractFromFile } from '../analyzers/tree-sitter/extractor.js';
 import { getLanguageForFile, isLanguageAvailable } from '../analyzers/tree-sitter/parser.js';
 import { analyzeMarkdown } from '../analyzers/markdown.js';
-import { analyzeSource, BINARY_SOURCE_EXTENSIONS, SOURCE_EXTENSIONS, MAX_FILE_SIZE } from '../analyzers/source.js';
+import { analyzeSource, BINARY_SOURCE_EXTENSIONS, SOURCE_EXTENSIONS } from '../analyzers/source.js';
 import type { SourceFile } from '../analyzers/source.js';
 import { saveIndex, loadSearchText, saveSearchText } from '../storage/store.js';
 import { SqliteStore } from '../storage/sqlite.js';
@@ -125,6 +125,7 @@ export class ReconWatcher {
     private debounceMs = 1500,
     private customIgnore: string[] = [],
     private projectRoot?: string,
+    private maxFileSize: number = Infinity,
     private store?: SqliteStore,
   ) {}
 
@@ -625,18 +626,21 @@ export class ReconWatcher {
       if (BINARY_SOURCE_EXTENSIONS.has(ext)) {
         file = { path: relPath, kind: 'binary', ext };
       } else {
-        // SECURITY: cap the read at the same MAX_FILE_SIZE the walker (source.ts)
-        // uses, BEFORE reading, so a watcher event on an oversized text-native
-        // source can't OOM the long-lived process. Over-cap (or a vanished file) →
-        // treat as removal: nodes already gone, just prune the snapshot.
-        try {
-          if (statSync(absPath).size > MAX_FILE_SIZE) {
+        // Optional OOM escape hatch (multiformat-distill-04): when the install
+        // configures a finite maxFileSize, cap the read at it BEFORE reading so a
+        // watcher event on an oversized text-native source can't OOM the long-lived
+        // process. DEFAULTS to unlimited (no cap), matching the walkers. Over-cap
+        // (or a vanished file) → treat as removal: nodes already gone, just prune.
+        if (Number.isFinite(this.maxFileSize)) {
+          try {
+            if (statSync(absPath).size > this.maxFileSize) {
+              await this.updateSearchTextSnapshot(staleKeys, {});
+              return;
+            }
+          } catch {
             await this.updateSearchTextSnapshot(staleKeys, {});
             return;
           }
-        } catch {
-          await this.updateSearchTextSnapshot(staleKeys, {});
-          return;
         }
         let content: string;
         try {
