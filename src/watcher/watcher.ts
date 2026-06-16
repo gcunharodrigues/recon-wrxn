@@ -303,9 +303,6 @@ export class ReconWatcher {
             this.store.removeNodesByFile(relPath);
           }
         }
-        // Live-retrieval refresh: notify after the unlink is applied (the early
-        // exit path). Guarded so a bad callback can't crash the watcher.
-        await this.fireOnChange();
         return;
       }
 
@@ -341,11 +338,6 @@ export class ReconWatcher {
       };
 
       this.maybeAutoSave();
-
-      // Live-retrieval refresh: notify after the add/change work is applied so
-      // serve can rebuild stale derived indexes (the BM25 ranker) without a
-      // restart. Guarded so a bad callback can't crash the watcher.
-      await this.fireOnChange();
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       console.error(`[recon:watch] Error processing ${absPath}: ${msg}`);
@@ -363,6 +355,12 @@ export class ReconWatcher {
       if (this.pendingQueue.length > 0) {
         const next = this.pendingQueue.shift()!;
         this.processFile(next.absPath, next.repoName, 'change');
+      } else {
+        // Burst drained — fire the live-retrieval refresh ONCE here, not per file.
+        // A multi-file burst (branch switch, project-wide edit) otherwise triggers N
+        // synchronous BM25 rebuilds, each blocking the serve event loop; coalescing to
+        // the drained edge does a single rebuild (review finding, P1.5-B).
+        await this.fireOnChange();
       }
     }
   }
