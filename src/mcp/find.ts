@@ -459,9 +459,16 @@ export function executeFind(
  * low-cosine neighbors and "No results" never happens (qa-finding-03). Dropping
  * every semantic hit below this floor BEFORE fusion means such a query fuses to
  * empty → "No results", while a genuine conceptual match (high cosine) is retained.
- * Starting value; the main thread validates/tunes it against the real corpus.
+ *
+ * 0.4 is tuned on the real WRXN-OS prose corpus (P1.5 slice A out-of-band sweep):
+ * all-MiniLM-L6-v2 is anisotropic — pure-gibberish queries still score 0.30–0.48
+ * cosine against unrelated pages, so a 0.3 floor let a nonsense query keep ~32/50
+ * neighbors. 0.4 sits just above that gibberish band yet below the real-target
+ * cosine median (~0.49); it empties true gibberish (0 BM25, 0 above-floor) while
+ * keeping GOLD hit@5 at 100% — the 5/16 low-cosine real targets are carried by the
+ * BM25 arm, which the floor never gates. Above ~0.45 a real target starts dropping.
  */
-const SEMANTIC_FLOOR = 0.3;
+const SEMANTIC_FLOOR = 0.4;
 
 export async function executeFindHybrid(
   graph: KnowledgeGraph,
