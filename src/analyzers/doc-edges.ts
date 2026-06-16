@@ -63,9 +63,14 @@ function resolveAnchor(
     return pickSymbol(byFile.get(path) ?? [], r.slice(hash + 1));
   }
 
-  // 3. A bare path → the File node for it.
+  // 3. A bare path → the File node for it, OR the raw Source node a distilled
+  //    page was `derived_from:` (id `source:<relpath>`, e.g. a .pdf). Both are
+  //    whole-file anchors; the provenance loop (multiformat-distill-07) needs
+  //    Source so `derived_from` closes back to the raw artifact.
   const path = normalizePath(r);
-  return (byFile.get(path) ?? []).find((n) => n.type === NodeType.File);
+  return (byFile.get(path) ?? []).find(
+    (n) => n.type === NodeType.File || n.type === NodeType.Source,
+  );
 }
 
 /** Resolve a `file:line` citation to the innermost containing code symbol. */
@@ -75,8 +80,16 @@ function resolveCitation(byFile: Map<string, Node[]>, ref: string): Node | undef
   const path = normalizePath(m[1]);
   const line = parseInt(m[2], 10);
 
+  // A Source node carries a non-Markdown Language so it lands in byFile, and its
+  // 1..N line span could "contain" a cited line — but a Source is a raw artifact,
+  // not a code symbol, so a `file:line` citation must never resolve to it
+  // (multiformat-distill-07).
   const containing = (byFile.get(path) ?? []).filter(
-    (n) => n.endLine > 0 && n.startLine <= line && n.endLine >= line,
+    (n) =>
+      n.type !== NodeType.Source &&
+      n.endLine > 0 &&
+      n.startLine <= line &&
+      n.endLine >= line,
   );
   if (containing.length === 0) return undefined;
   // Innermost = latest start, then tightest end.
