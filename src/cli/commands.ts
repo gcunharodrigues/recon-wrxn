@@ -16,6 +16,7 @@ import { detectV5Index, migrateV5ToV6, detectV6Index } from '../storage/migrate.
 import { generateAgentsMd } from '../generators/agents-gen.js';
 import type { IndexMeta } from '../storage/types.js';
 import { startServer } from '../mcp/server.js';
+import { maybeStartQueryDoor } from '../server/endpoint.js';
 import { setFulltextRanker } from '../mcp/find.js';
 import { BM25Index } from '../search/bm25.js';
 import { VectorStore } from '../search/vector-store.js';
@@ -942,6 +943,27 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
     // Keep process alive
     await new Promise(() => { });
   } else {
+    // Concurrent HTTP query door (recon-brain-recall-02, ADR 0003): in stdio mode,
+    // if the serveHttp gate is on, ALSO bind the read-only find app on 127.0.0.1 on
+    // an OS-assigned port and announce {pid,port} in .recon-wrxn/serve-endpoint.json,
+    // so a short-lived client (the kernel recall hook) can reach this one warm index
+    // without a second cold serve. Both transports run in this single process; the
+    // door reads the SAME live store getter as stdio. Default off → serve unchanged.
+    const door = await maybeStartQueryDoor({
+      serveHttp: config.serveHttp,
+      reconDir: join(projectRoot, '.recon-wrxn'),
+      graph,
+      projectRoot,
+      vectorStore: () => liveStore,
+    });
+    if (door) {
+      // Best-effort discovery-file cleanup on clean shutdown — SIGINT/SIGTERM/stdin-end
+      // all funnel through startServer → process.exit(0) → 'exit'. A SIGKILL leaves a
+      // stale file, but the reader's pid liveness probe treats it as "not warm".
+      process.on('exit', () => door.close());
+      console.error(`[recon] HTTP query door on 127.0.0.1:${door.port} (concurrent with stdio).`);
+    }
+
     console.error('[recon] MCP server starting on stdio...');
     // Pass a GETTER so each CallTool resolves the current store — this is what
     // makes the mid-session hybrid swap visible without a restart.

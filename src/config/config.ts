@@ -23,6 +23,15 @@ export interface ReconConfig {
    * `--no-serve-embed` or `"serveEmbed": false`.
    */
   serveEmbed?: boolean;
+  /**
+   * Run the read-only HTTP find door CONCURRENTLY with the stdio MCP transport
+   * during `serve` (distinct from the dashboard-exclusive `--http`/`http` mode).
+   * When on, serve ALSO binds the find app on 127.0.0.1 on an OS-assigned port and
+   * writes `.recon-wrxn/serve-endpoint.json` ({pid,port}), so a short-lived client
+   * (a kernel recall hook) can reach the one warm index without a second cold serve.
+   * Default false — serve behavior is unchanged when off. (ADR 0003.)
+   */
+  serveHttp?: boolean;
   /** Enable file watcher for live re-indexing */
   watch?: boolean;
   /** Debounce interval in ms for file watcher */
@@ -60,6 +69,7 @@ const DEFAULTS: Required<ReconConfig> = {
   projects: [],
   embeddings: false,
   serveEmbed: true,
+  serveHttp: false,
   watch: true,
   watchDebounce: 1500,
   http: false,
@@ -152,6 +162,7 @@ const INIT_TEMPLATE: ReconConfig = {
   projects: [],
   embeddings: false,
   serveEmbed: true,
+  serveHttp: false,
   watch: true,
   ignore: [],
 };
