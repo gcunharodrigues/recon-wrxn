@@ -8,9 +8,7 @@
  */
 
 import type { BM25Result } from './bm25.js';
-import type { VectorSearchResult, VectorStore } from './vector-store.js';
-import type { Node } from '../graph/types.js';
-import type { KnowledgeGraph } from '../graph/graph.js';
+import type { VectorSearchResult } from './vector-store.js';
 
 // ─── RRF Constant ───────────────────────────────────────────────
 
@@ -92,58 +90,4 @@ export function mergeWithRRF(
     .slice(0, limit);
 
   return sorted;
-}
-
-// ─── Hybrid Search Pipeline ────────────────────────────────────
-
-/**
- * Execute hybrid search: BM25 + vector (if available).
- * Falls back to BM25-only when no vector store is provided.
- */
-export function hybridSearch(
-  bm25Results: BM25Result[],
-  vectorStore: VectorStore | null,
-  queryEmbedding: Float32Array | null,
-  limit: number = 20,
-): HybridSearchResult[] {
-  // If no vector store or query embedding, return BM25 as-is
-  if (!vectorStore || !queryEmbedding || vectorStore.size === 0) {
-    return bm25Results.slice(0, limit).map((r, i) => ({
-      nodeId: r.nodeId,
-      score: 1 / (RRF_K + i + 1),
-      sources: ['bm25'] as ('bm25' | 'semantic')[],
-      bm25Score: r.score,
-    }));
-  }
-
-  // Get semantic results
-  const semanticResults = vectorStore.search(queryEmbedding, limit * 2);
-
-  // Merge with RRF
-  return mergeWithRRF(bm25Results, semanticResults, limit);
-}
-
-/**
- * Format hybrid search results as markdown.
- */
-export function formatHybridResults(
-  results: HybridSearchResult[],
-  graph: KnowledgeGraph,
-): string {
-  if (results.length === 0) return '_No results found._';
-
-  const lines: string[] = [];
-
-  for (const r of results) {
-    const node = graph.getNode(r.nodeId);
-    if (!node) continue;
-
-    const sources = r.sources.join('+');
-    lines.push(
-      `- **${node.name}** (${node.type}) — \`${node.file}:${node.startLine}\` | ` +
-      `${node.language} | [${sources}]`,
-    );
-  }
-
-  return lines.join('\n');
 }

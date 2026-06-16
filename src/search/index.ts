@@ -9,5 +9,5 @@ export { generateEmbeddingText, isEmbeddable, shouldEmbed } from './text-generat
 export { initEmbedder, embedText, embedBatch, disposeEmbedder, isEmbedderReady, DEFAULT_CONFIG } from './embedder.js';
 export type { EmbedderConfig } from './embedder.js';
 
-export { mergeWithRRF, hybridSearch, formatHybridResults } from './hybrid-search.js';
+export { mergeWithRRF } from './hybrid-search.js';
 export type { HybridSearchResult } from './hybrid-search.js';

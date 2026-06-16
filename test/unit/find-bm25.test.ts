@@ -260,9 +260,10 @@ describe('gold-query retrieval regression (16 conceptual queries)', () => {
   });
 
   it('live executeFind ranks the gold target top-5 over the fulltext-classified queries', () => {
-    // The live classifier routes most conceptual queries to fulltext; one gold
-    // query ("…orphan analysis…") trips the structural keyword "orphan" and is
-    // diverted before fulltext — a pre-existing classifier behavior, out of scope.
+    // The live classifier routes the conceptual gold queries to fulltext — the
+    // interrogative-demotion fix (find.ts) sends a question led by "why/how/…" with
+    // <2 structural keywords (e.g. "why is … orphan analysis …", which trips the
+    // keyword "orphan") to fulltext rather than diverting it to the structural strategy.
     const fulltextGold = GOLD.filter(([q]) => classifyQuery(q) === 'fulltext');
     expect(fulltextGold.length).toBeGreaterThanOrEqual(15);
 

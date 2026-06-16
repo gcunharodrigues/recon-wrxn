@@ -7,8 +7,7 @@ import { describe, it, expect } from 'vitest';
 import { VectorStore } from '../../src/search/vector-store.js';
 import type { SerializedVectorStore } from '../../src/search/vector-store.js';
 import { generateEmbeddingText, isEmbeddable } from '../../src/search/text-generator.js';
-import { mergeWithRRF, hybridSearch } from '../../src/search/hybrid-search.js';
-import type { HybridSearchResult } from '../../src/search/hybrid-search.js';
+import { mergeWithRRF } from '../../src/search/hybrid-search.js';
 import { KnowledgeGraph } from '../../src/graph/graph.js';
 import { NodeType, RelationshipType, Language } from '../../src/graph/types.js';
 import type { Node } from '../../src/graph/types.js';
@@ -387,60 +386,6 @@ describe('mergeWithRRF', () => {
   });
 });
 
-// ─── Hybrid Search Pipeline Tests ───────────────────────────────
-
-describe('hybridSearch', () => {
-  it('falls back to BM25 when no vector store', () => {
-    const bm25: BM25Result[] = [
-      { nodeId: 'a', score: 10 },
-      { nodeId: 'b', score: 5 },
-    ];
-
-    const results = hybridSearch(bm25, null, null, 10);
-
-    expect(results).toHaveLength(2);
-    expect(results[0].nodeId).toBe('a');
-    expect(results[0].sources).toEqual(['bm25']);
-  });
-
-  it('falls back to BM25 when vector store is empty', () => {
-    const bm25: BM25Result[] = [{ nodeId: 'a', score: 10 }];
-    const store = new VectorStore(3);
-    const queryEmb = new Float32Array([1, 0, 0]);
-
-    const results = hybridSearch(bm25, store, queryEmb, 10);
-
-    expect(results[0].sources).toEqual(['bm25']);
-  });
-
-  it('uses hybrid mode when vector store has data', () => {
-    const bm25: BM25Result[] = [
-      { nodeId: 'a', score: 10 },
-      { nodeId: 'b', score: 5 },
-    ];
-
-    const store = new VectorStore(3);
-    store.add('a', new Float32Array([1, 0, 0]));
-    store.add('c', new Float32Array([0, 1, 0]));
-
-    const queryEmb = new Float32Array([1, 0, 0]);
-    const results = hybridSearch(bm25, store, queryEmb, 10);
-
-    // 'a' should be boosted (found by both)
-    const itemA = results.find(r => r.nodeId === 'a')!;
-    expect(itemA.sources).toContain('bm25');
-    expect(itemA.sources).toContain('semantic');
-  });
-
-  it('falls back to BM25 when query embedding is null', () => {
-    const bm25: BM25Result[] = [{ nodeId: 'a', score: 10 }];
-    const store = new VectorStore(3);
-    store.add('a', new Float32Array([1, 0, 0]));
-
-    const results = hybridSearch(bm25, store, null, 10);
-    expect(results[0].sources).toEqual(['bm25']);
-  });
-});
 
 // ─── Handler Integration Tests ──────────────────────────────────
 
