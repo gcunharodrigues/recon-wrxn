@@ -131,7 +131,13 @@ export function resolveDocEdges(
       type: RelationshipType.DOCUMENTED_BY,
       sourceId: c.sourceId,
       targetId: target.id,
-      confidence: 1.0,
+      // Doc-ASSERTED, not code-verified: the page claims it documents the symbol;
+      // the code side never confirms it, so the edge can't honestly carry full
+      // confidence (a forged/careless `.md` would otherwise mint an authoritative
+      // 1.0 edge — P1.5-D, SEC-LOW). A frontmatter `derived_from` anchor is a
+      // deliberate provenance declaration (stronger) than an incidental `file:line`
+      // body citation (weaker); both stay < 1.0 to mark them unverified.
+      confidence: c.kind === 'anchor' ? 0.9 : 0.5,
     });
   }
   return edges;

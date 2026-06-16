@@ -57,6 +57,21 @@ function buildCodeGraph(): KnowledgeGraph {
 const cite = (ref: string, kind: DocCitation['kind'], sourceId = 'md:page:docs/d.md'): DocCitation =>
   ({ sourceId, ref, kind });
 
+// ─── Confidence: doc-asserted, not code-verified (P1.5-D) ────────
+
+describe('resolveDocEdges — confidence reflects doc-asserted (unverified) provenance', () => {
+  it('a derived_from anchor outranks an incidental body citation, and NEITHER is a verified 1.0 edge', () => {
+    const g = buildCodeGraph();
+    const [anchorEdge] = resolveDocEdges(g, [cite('ts:func:login', 'anchor')]);
+    const [citeEdge] = resolveDocEdges(g, [cite('src/auth/login.ts:10', 'citation')]);
+    expect(anchorEdge.confidence).toBe(0.9);
+    expect(citeEdge.confidence).toBe(0.5);
+    // The code side never confirms a doc's claim → no DOCUMENTED_BY edge is verified.
+    expect(anchorEdge.confidence).toBeLessThan(1.0);
+    expect(citeEdge.confidence).toBeLessThan(anchorEdge.confidence);
+  });
+});
+
 // ─── Anchor resolution ──────────────────────────────────────────
 
 describe('resolveDocEdges — derived_from anchors', () => {
