@@ -9,7 +9,7 @@
  *
  * Temp-dir style mirrors markdown-index.test.ts.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -113,5 +113,43 @@ describe('indexProject ingests prose for secondary repos', () => {
     const target = stored!.graph.getNode(docEdges[0].targetId);
     expect(target?.name).toBe('validateToken');
     expect(target?.file).toBe('lib/auth.ts');
+  });
+});
+
+// ─── Source-file skips report under the correct banner ───────────
+//
+// A malformed .json/.yaml (Source-analyzer formats) records a warning and is
+// skipped — correct. But its skip must NOT be reported under the markdown
+// banner ("N markdown file(s) skipped"), since no markdown was involved
+// (multiformat-distill-09). Source skips get their own banner, mirroring the
+// per-analyzer tree-sitter/markdown banners.
+describe('source-file skips are labeled source, not markdown (multiformat-distill-09)', () => {
+  it('reports malformed .json/.yaml under a source banner, not the markdown one', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'recon-srcskip-'));
+    const main = mkdtempSync(join(tmpdir(), 'recon-srcskip-main-'));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      // A clean .md (no prose warning) next to two malformed source files, so the
+      // ONLY skips in this pass are non-markdown sources.
+      writeFileSync(join(dir, 'README.md'), '# Readme\nClean prose body.\n');
+      writeFileSync(join(dir, 'bad.json'), '{ "a": 1'); // unclosed object → throws
+      writeFileSync(join(dir, 'bad.yaml'), 'key: [unclosed'); // unterminated flow seq → throws
+
+      await indexProject(dir, main, 'srcskip');
+
+      const output = errSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+
+      // The bug: source skips were printed as "N markdown file(s) skipped". With
+      // zero markdown warnings, no markdown skip banner should appear at all.
+      expect(output).not.toContain('markdown file(s) skipped');
+      // They are reported accurately under a source banner, naming the bad files.
+      expect(output).toContain('2 source file(s) skipped due to errors');
+      expect(output).toContain('bad.json');
+      expect(output).toContain('bad.yaml');
+    } finally {
+      errSpy.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(main, { recursive: true, force: true });
+    }
   });
 });

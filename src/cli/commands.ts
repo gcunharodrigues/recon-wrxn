@@ -24,6 +24,7 @@ import { initEmbedder, embedBatch, disposeEmbedder, DEFAULT_CONFIG } from '../se
 import { analyzeTreeSitter, analyzeTreeSitterParallel } from '../analyzers/tree-sitter/index.js';
 import { analyzeMarkdown, findMarkdownFiles } from '../analyzers/markdown.js';
 import type { MarkdownAnalysisResult } from '../analyzers/markdown.js';
+import type { AnalyzerWarning } from '../analyzers/types.js';
 import { analyzeSource, findSourceFiles } from '../analyzers/source.js';
 import { resolveDocEdges } from '../analyzers/doc-edges.js';
 import { getAvailableLanguages } from '../analyzers/tree-sitter/index.js';
@@ -83,7 +84,7 @@ async function ingestProse(
   ignore: string[],
   maxFileSize: number,
   repoName?: string,
-): Promise<MarkdownAnalysisResult & { fileHashes: Record<string, string> }> {
+): Promise<MarkdownAnalysisResult & { fileHashes: Record<string, string>; sourceWarnings: AnalyzerWarning[] }> {
   const files = findMarkdownFiles(walkRoot, ignore, maxFileSize);
   const mdResult = analyzeMarkdown(files);
   for (const node of mdResult.nodes) {
@@ -104,7 +105,9 @@ async function ingestProse(
     graph.addNode(node);
   }
   Object.assign(mdResult.searchText, srcResult.searchText);
-  mdResult.warnings.push(...srcResult.warnings);
+  // Source skips are kept SEPARATE from markdown skips (returned as sourceWarnings)
+  // so each caller reports them under a truthful banner — a skipped .json/.yaml is
+  // not a "markdown file" (multiformat-distill-09).
 
   // Resolve doc→code DOCUMENTED_BY edges now that BOTH code (tree-sitter +
   // cross-language, added before this call) and the prose nodes above are in the
@@ -124,7 +127,7 @@ async function ingestProse(
     if (f.content !== undefined) fileHashes[f.path] = hashContent(f.content);
   }
 
-  return { ...mdResult, fileHashes };
+  return { ...mdResult, fileHashes, sourceWarnings: srcResult.warnings };
 }
 
 // ─── indexProject: index an external directory ──────────────────
@@ -202,6 +205,12 @@ export async function indexProject(
   if (mdResult.warnings.length > 0) {
     console.error(`[recon] ${mdResult.warnings.length} markdown file(s) skipped due to errors:`);
     for (const w of mdResult.warnings) {
+      console.error(`  ${w.file}: ${w.reason}`);
+    }
+  }
+  if (mdResult.sourceWarnings.length > 0) {
+    console.error(`[recon] ${mdResult.sourceWarnings.length} source file(s) skipped due to errors:`);
+    for (const w of mdResult.sourceWarnings) {
       console.error(`  ${w.file}: ${w.reason}`);
     }
   }
@@ -411,6 +420,12 @@ export async function indexCommand(options: { force?: boolean; repo?: string; em
   if (mdResult.warnings.length > 0) {
     console.log(`[recon] ${mdResult.warnings.length} markdown file(s) skipped due to errors:`);
     for (const w of mdResult.warnings) {
+      console.log(`  ${w.file}: ${w.reason}`);
+    }
+  }
+  if (mdResult.sourceWarnings.length > 0) {
+    console.log(`[recon] ${mdResult.sourceWarnings.length} source file(s) skipped due to errors:`);
+    for (const w of mdResult.sourceWarnings) {
       console.log(`  ${w.file}: ${w.reason}`);
     }
   }
