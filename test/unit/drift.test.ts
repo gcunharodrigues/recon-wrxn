@@ -201,7 +201,103 @@ describe('formatDrift — renders the AC4 fields', () => {
   });
 
   it('a clean corpus (nothing stale, nothing unwatermarked) renders a no-drift line', () => {
-    const out = formatDrift({ stale: [], unwatermarked: [], fresh: 0 });
+    const out = formatDrift({ stale: [], unwatermarked: [], multiAnchor: [], uncomparable: [], fresh: 0 });
     expect(out.toLowerCase()).toContain('no drift');
+  });
+});
+
+// ─── HIGH (review-fix): multi-anchor pages route to a distinct bucket ────
+
+// A page whose `derived_from` resolves to MORE THAN ONE source symbol cannot be
+// drift-checked against its single `synced_to` watermark — comparing each target
+// to the one watermark falsely marks all-but-one STALE (and pollutes fresh). Such
+// a page lands in a distinct `multiAnchor` bucket, never stale/fresh/unwatermarked.
+describe('computeDrift — a multi-anchor page is bucketed, never mis-compared', () => {
+  it('a watermarked 2-anchor page lands in multiAnchor, not stale/fresh', () => {
+    const g = new KnowledgeGraph();
+    g.addNode(symbol('ts:func:login', 'login', { fingerprint: 'aaaaaaaaaaaaaaaa' }));
+    g.addNode(symbol('ts:func:logout', 'logout', { startLine: 30, endLine: 40, fingerprint: 'bbbbbbbbbbbbbbbb' }));
+    g.addNode(page('md:page:docs/auth.md', 'Auth Guide', { syncedTo: 'aaaaaaaaaaaaaaaa' }));
+    // Two `derived_from` anchor targets on the one page.
+    g.addRelationship(docEdge('md:page:docs/auth.md', 'ts:func:login', ANCHOR_CONFIDENCE));
+    g.addRelationship(docEdge('md:page:docs/auth.md', 'ts:func:logout', ANCHOR_CONFIDENCE));
+
+    const report = computeDrift(g);
+
+    expect(report.multiAnchor).toHaveLength(1);
+    expect(report.multiAnchor[0].page).toBe('Auth Guide');
+    expect(report.multiAnchor[0].symbols).toEqual(expect.arrayContaining(['login', 'logout']));
+    // The watermark-matching target must NOT leak into fresh, nor the other into stale.
+    expect(report.stale).toHaveLength(0);
+    expect(report.fresh).toBe(0);
+  });
+});
+
+// ─── MED (review-fix): a watermarked fingerprint-less target is uncomparable ──
+
+// A watermarked page whose anchor resolves to a File node or a raw Source artifact
+// (no symbol `fingerprint`) was silently dropped from every bucket. It now lands in
+// a distinct `uncomparable` bucket (sync-03 AC5: a watermarked page is never dropped).
+describe('computeDrift — a watermarked whole-file/Source target is uncomparable', () => {
+  it('a watermarked page anchored to a File node lands in uncomparable, not dropped', () => {
+    const g = new KnowledgeGraph();
+    // A bare-path anchor resolves to a File node — no fingerprint to compare.
+    g.addNode(symbol('ts:file:src/auth.ts', 'auth.ts', { type: NodeType.File }));
+    g.addNode(page('md:page:docs/auth.md', 'Auth Guide', { syncedTo: 'bbbbbbbbbbbbbbbb' }));
+    g.addRelationship(docEdge('md:page:docs/auth.md', 'ts:file:src/auth.ts', ANCHOR_CONFIDENCE));
+
+    const report = computeDrift(g);
+
+    expect(report.uncomparable).toHaveLength(1);
+    expect(report.uncomparable[0].page).toBe('Auth Guide');
+    expect(report.uncomparable[0].symbol).toBe('auth.ts');
+    expect(report.stale).toHaveLength(0);
+    expect(report.fresh).toBe(0);
+  });
+});
+
+// ─── LOW (review-fix): an empty-string watermark is unwatermarked, not stale ──
+
+describe('computeDrift — an empty-string watermark is treated as unwatermarked', () => {
+  it("a page with synced_to '' is unwatermarked, never compared to a fingerprint", () => {
+    const g = new KnowledgeGraph();
+    g.addNode(symbol('ts:func:login', 'login', { fingerprint: 'aaaaaaaaaaaaaaaa' }));
+    g.addNode(page('md:page:docs/auth.md', 'Auth Guide', { syncedTo: '' }));
+    g.addRelationship(docEdge('md:page:docs/auth.md', 'ts:func:login', ANCHOR_CONFIDENCE));
+
+    const report = computeDrift(g);
+
+    expect(report.stale).toHaveLength(0);
+    expect(report.unwatermarked).toHaveLength(1);
+    expect(report.unwatermarked[0].symbol).toBe('login');
+  });
+});
+
+// ─── formatDrift renders the new buckets ─────────────────────────
+
+describe('formatDrift — renders the multiAnchor and uncomparable buckets', () => {
+  it('lists a multi-anchor page and an uncomparable page in the output', () => {
+    const out = formatDrift({
+      stale: [],
+      unwatermarked: [],
+      multiAnchor: [
+        { page: 'Multi Guide', pageFile: 'docs/multi.md', symbols: ['login', 'logout'], syncedTo: 'aaaa' },
+      ],
+      uncomparable: [
+        {
+          page: 'Whole Guide',
+          pageFile: 'docs/whole.md',
+          symbol: 'auth.ts',
+          symbolFile: 'src/auth.ts',
+          symbolLine: 1,
+          reason: 'no fingerprint / whole-file target',
+        },
+      ],
+      fresh: 0,
+    });
+    expect(out).toContain('Multi Guide');
+    expect(out).toContain('login');
+    expect(out).toContain('Whole Guide');
+    expect(out).toContain('auth.ts');
   });
 });

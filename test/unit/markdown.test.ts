@@ -390,6 +390,17 @@ describe('analyzeMarkdown — synced_to watermark', () => {
       kind: 'anchor',
     });
   });
+
+  it('strips C0 control chars (incl. ESC) from the synced_to watermark (parity with node.name)', () => {
+    // The watermark surfaces in recon_explain / recon_drift output, so it must be
+    // stripped just like node.name — an un-stripped ESC could spoof the terminal.
+    const md = ['---', 'synced_to: ast:' + String.fromCharCode(27) + '[31mabc', '---', '# H', 'b', ''].join('\n');
+    const { nodes } = analyzeMarkdown([{ path: 'docs/ctl.md', content: md }]);
+    const page = nodes.find((n) => n.id === 'md:page:docs/ctl.md')!;
+    expect(C0_CONTROL.test(page.syncedTo!)).toBe(false);
+    expect(page.syncedTo).toContain('ast:');
+    expect(page.syncedTo).toContain('abc');
+  });
 });
 
 // ─── Citation harvest is bounded (ReDoS guard) ───────────────────

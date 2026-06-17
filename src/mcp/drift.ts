@@ -22,7 +22,7 @@
 import type { KnowledgeGraph } from '../graph/graph.js';
 import { NodeType, RelationshipType } from '../graph/types.js';
 import type { Node } from '../graph/types.js';
-import { ANCHOR_CONFIDENCE } from '../analyzers/doc-edges.js';
+import { CITATION_CONFIDENCE } from '../analyzers/doc-edges.js';
 
 /** A watermarked derived page whose source symbol's fingerprint has moved. */
 export interface StaleEntry {
@@ -44,9 +44,39 @@ export interface UnwatermarkedEntry {
   symbolLine: number;
 }
 
+/**
+ * A derived page whose `derived_from` anchor resolves to MORE THAN ONE source
+ * symbol. Drift for a multi-target page is unsupported (sync-01 defers it): a
+ * single `synced_to` watermark can't be compared against several fingerprints
+ * without falsely flagging all-but-one stale, so the whole page is reported here
+ * rather than mis-compared.
+ */
+export interface MultiAnchorEntry {
+  page: string;
+  pageFile: string;
+  symbols: string[]; // every target symbol name the anchor resolved to
+  syncedTo?: string; // the page's watermark, when it carries one
+}
+
+/**
+ * A watermarked derived page whose single anchor target has no fingerprint to
+ * compare against — a whole-file File node or a raw Source artifact (e.g. a
+ * distilled PDF). Reported rather than silently dropped (sync-03 AC5).
+ */
+export interface UncomparableEntry {
+  page: string;
+  pageFile: string;
+  symbol: string;
+  symbolFile: string;
+  symbolLine: number;
+  reason: string;
+}
+
 export interface DriftReport {
   stale: StaleEntry[];
   unwatermarked: UnwatermarkedEntry[];
+  multiAnchor: MultiAnchorEntry[];
+  uncomparable: UncomparableEntry[];
   fresh: number; // count of watermarked (page, symbol) pairs whose fingerprint matches
 }
 
@@ -56,6 +86,8 @@ export interface DriftReport {
 export function computeDrift(graph: KnowledgeGraph): DriftReport {
   const stale: StaleEntry[] = [];
   const unwatermarked: UnwatermarkedEntry[] = [];
+  const multiAnchor: MultiAnchorEntry[] = [];
+  const uncomparable: UncomparableEntry[] = [];
   let fresh = 0;
 
   for (const node of graph.nodes.values()) {
@@ -66,15 +98,29 @@ export function computeDrift(graph: KnowledgeGraph): DriftReport {
     // the exact symbol the anchor resolved to at index time.
     const targets: Node[] = graph
       .getOutgoing(node.id, RelationshipType.DOCUMENTED_BY)
-      .filter((e) => e.confidence === ANCHOR_CONFIDENCE)
+      .filter((e) => e.confidence > CITATION_CONFIDENCE)
       .map((e) => graph.getNode(e.targetId))
       .filter((n): n is Node => Boolean(n));
 
     if (targets.length === 0) continue; // not a declared-derived page → untracked
 
-    // No watermark → reported in the distinct `unwatermarked` bucket, never stale
-    // and never dropped (sync-03 AC5).
-    if (node.syncedTo === undefined) {
+    // More than one anchor target → a single `synced_to` watermark can't be
+    // compared against several fingerprints without falsely marking all-but-one
+    // stale, so the whole page goes to the distinct `multiAnchor` bucket (sync-01
+    // defers multi-target drift) — never to stale/fresh/unwatermarked.
+    if (targets.length > 1) {
+      multiAnchor.push({
+        page: node.name,
+        pageFile: node.file,
+        symbols: targets.map((t) => t.name),
+        syncedTo: node.syncedTo,
+      });
+      continue;
+    }
+
+    // No watermark — absent OR empty string — goes to the distinct `unwatermarked`
+    // bucket, never stale and never dropped (sync-03 AC5).
+    if (!node.syncedTo) {
       for (const t of targets) {
         unwatermarked.push({
           page: node.name,
@@ -88,9 +134,20 @@ export function computeDrift(graph: KnowledgeGraph): DriftReport {
     }
 
     for (const t of targets) {
-      // A whole-file anchor (File/Source target) has no symbol fingerprint to
-      // compare against — skip it rather than guess drift.
-      if (t.fingerprint === undefined) continue;
+      // A whole-file anchor (File node) or raw Source artifact has no symbol
+      // fingerprint to compare against — report it as uncomparable rather than
+      // silently dropping the watermarked page from every bucket (sync-03 AC5).
+      if (t.fingerprint === undefined) {
+        uncomparable.push({
+          page: node.name,
+          pageFile: node.file,
+          symbol: t.name,
+          symbolFile: t.file,
+          symbolLine: t.startLine,
+          reason: 'no fingerprint / whole-file target',
+        });
+        continue;
+      }
       if (t.fingerprint === node.syncedTo) {
         fresh++;
       } else {
@@ -107,7 +164,7 @@ export function computeDrift(graph: KnowledgeGraph): DriftReport {
     }
   }
 
-  return { stale, unwatermarked, fresh };
+  return { stale, unwatermarked, multiAnchor, uncomparable, fresh };
 }
 
 /**
@@ -116,16 +173,23 @@ export function computeDrift(graph: KnowledgeGraph): DriftReport {
  * fingerprint for every stale entry (sync-03 AC4).
  */
 export function formatDrift(report: DriftReport): string {
-  const { stale, unwatermarked, fresh } = report;
+  const { stale, unwatermarked, multiAnchor, uncomparable, fresh } = report;
 
   const lines: string[] = [
     '# Drift Report',
     '',
-    `**Stale:** ${stale.length} | **Unwatermarked:** ${unwatermarked.length} | **Fresh:** ${fresh}`,
+    `**Stale:** ${stale.length} | **Unwatermarked:** ${unwatermarked.length} | ` +
+      `**Multi-anchor:** ${multiAnchor.length} | **Uncomparable:** ${uncomparable.length} | ` +
+      `**Fresh:** ${fresh}`,
     '',
   ];
 
-  if (stale.length === 0 && unwatermarked.length === 0) {
+  if (
+    stale.length === 0 &&
+    unwatermarked.length === 0 &&
+    multiAnchor.length === 0 &&
+    uncomparable.length === 0
+  ) {
     lines.push(
       fresh > 0
         ? `_No drift: ${fresh} watermarked derived page(s) fresh._`
@@ -151,6 +215,28 @@ export function formatDrift(report: DriftReport): string {
       lines.push(
         `- **${u.symbol}** — \`${u.page}\` (\`${u.pageFile}\`) is derived_from ` +
         `\`${u.symbolFile}:${u.symbolLine}\` but carries no \`synced_to\` watermark`,
+      );
+    }
+    lines.push('');
+  }
+
+  if (multiAnchor.length > 0) {
+    lines.push(`## Multi-anchor — unsupported (${multiAnchor.length})`, '');
+    for (const m of multiAnchor) {
+      lines.push(
+        `- \`${m.page}\` (\`${m.pageFile}\`) is derived_from ${m.symbols.length} symbols ` +
+        `(${m.symbols.map((s) => `**${s}**`).join(', ')}) — multi-target drift is not compared`,
+      );
+    }
+    lines.push('');
+  }
+
+  if (uncomparable.length > 0) {
+    lines.push(`## Uncomparable (${uncomparable.length})`, '');
+    for (const u of uncomparable) {
+      lines.push(
+        `- **${u.symbol}** — \`${u.page}\` (\`${u.pageFile}\`) is derived_from ` +
+        `\`${u.symbolFile}:${u.symbolLine}\` (${u.reason})`,
       );
     }
     lines.push('');

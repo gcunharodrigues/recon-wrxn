@@ -353,7 +353,7 @@ function analyzeFile(file: MarkdownFile, out: MarkdownAnalysisResult): void {
   // Carry the provenance watermark only when declared — a page without
   // `synced_to:` leaves the field absent (sync-03 reads that as `unwatermarked`,
   // distinct from stale). No default.
-  if (syncedTo) pageNode.syncedTo = syncedTo;
+  if (syncedTo) pageNode.syncedTo = stripControlChars(syncedTo);
   out.nodes.push(pageNode);
   out.searchText[pageId] = [title, ...pageParts].filter(Boolean).join(' ');
 
