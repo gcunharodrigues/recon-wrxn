@@ -18,6 +18,7 @@ import { KnowledgeGraph } from '../../src/graph/graph.js';
 import { NodeType, RelationshipType, Language } from '../../src/graph/types.js';
 import type { Node, Relationship } from '../../src/graph/types.js';
 import { handleToolCall } from '../../src/mcp/handlers.js';
+import { ANCHOR_CONFIDENCE } from '../../src/analyzers/doc-edges.js';
 
 // ─── Mock Graph Builder ─────────────────────────────────────────
 
@@ -616,6 +617,49 @@ describe('recon_explain synced_to watermark', () => {
 
     expect(result).toContain('# Context: Plain Guide');
     expect(result).not.toContain('Synced To');
+  });
+});
+
+// ─── recon_drift dispatch over MCP (sync-03, AC1/AC4) ─────────────
+
+describe('recon_drift handler', () => {
+  function withDocEdge(g: KnowledgeGraph, syncedTo: string, fingerprint: string): void {
+    g.addNode(makeNode('ts:func:parseToken', 'parseToken', {
+      file: 'src/token.ts', language: Language.TypeScript, package: 'src',
+      fingerprint,
+    }));
+    g.addNode(makeNode('md:page:docs/token.md', 'Token Guide', {
+      type: NodeType.Page, file: 'docs/token.md', language: Language.Markdown,
+      package: 'docs', exported: false, syncedTo,
+    }));
+    g.addRelationship({
+      id: 'md:page:docs/token.md-DOCUMENTED_BY-ts:func:parseToken',
+      type: RelationshipType.DOCUMENTED_BY,
+      sourceId: 'md:page:docs/token.md',
+      targetId: 'ts:func:parseToken',
+      confidence: ANCHOR_CONFIDENCE,
+    });
+  }
+
+  it('is callable over MCP and names the stale page, symbol, and fingerprints', async () => {
+    const g = buildMockGraph();
+    withDocEdge(g, 'bbbbbbbbbbbbbbbb', 'aaaaaaaaaaaaaaaa');
+
+    const result = await handleToolCall('recon_drift', {}, g);
+
+    expect(result).toContain('Token Guide');         // the doc page
+    expect(result).toContain('parseToken');          // the specific symbol
+    expect(result).toContain('bbbbbbbbbbbbbbbb');     // synced_to
+    expect(result).toContain('aaaaaaaaaaaaaaaa');     // current fingerprint
+  });
+
+  it('renders a no-drift report when the watermark matches the current fingerprint', async () => {
+    const g = buildMockGraph();
+    withDocEdge(g, 'aaaaaaaaaaaaaaaa', 'aaaaaaaaaaaaaaaa');
+
+    const result = await handleToolCall('recon_drift', {}, g);
+
+    expect(result.toLowerCase()).toContain('no drift');
   });
 });
 

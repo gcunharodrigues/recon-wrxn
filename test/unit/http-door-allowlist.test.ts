@@ -50,6 +50,18 @@ describe('POST /api/tools/:name — door route allowlist (recon-brain-recall-rev
     expect(res.status).toBe(200);
   });
 
+  // sync-03 AC6: recon_drift is read-only + git-free → door-eligible. It routes
+  // through the generic handleToolCall path (not the find/explain structured
+  // sidecars) and is NOT refused with 403.
+  it('allows recon_drift (200, routes — not 403)', async () => {
+    const res = await request(app).post('/api/tools/recon_drift').send({});
+    expect(res.status).toBe(200);
+    expect(res.status).not.toBe(403);
+    expect(handleToolCall).toHaveBeenCalled();
+    // It reached the real drift handler via the generic { result } door path.
+    expect(res.body.result).toContain('Drift Report');
+  });
+
   const DISALLOWED = [
     'recon_changes', 'recon_rename', 'recon_export',
     'recon_map', 'recon_impact', 'recon_rules', 'nonexistent_tool',

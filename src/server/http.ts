@@ -32,13 +32,15 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /**
- * The HTTP door (and the legacy --http dashboard) expose ONLY these two read-only
- * tools — the only ones the kernel recall hook + `wrxn brain query --neighbors` use.
- * Every other tool name is refused with 403 BEFORE reaching handleToolCall, keeping
- * recon_changes (a git shell-out) and the other mutating/heavier tools off the HTTP
- * surface entirely (recon-brain-recall-review, finding #1).
+ * The HTTP door (and the legacy --http dashboard) expose ONLY these read-only,
+ * git-free tools — the ones the kernel recall hook, `wrxn brain query --neighbors`,
+ * and the sync loop (sync-04) reach over the serve door. recon_drift joins the
+ * door because it is a PURE indexed-graph compare with no git/shell-out (sync-03
+ * AC6). Every other tool name is refused with 403 BEFORE reaching handleToolCall,
+ * keeping recon_changes (a git shell-out) and the other mutating/heavier tools off
+ * the HTTP surface entirely (recon-brain-recall-review, finding #1).
  */
-const DOOR_TOOLS = new Set(['recon_find', 'recon_explain']);
+const DOOR_TOOLS = new Set(['recon_find', 'recon_explain', 'recon_drift']);
 
 export interface HttpServerOptions {
   port: number;
@@ -105,7 +107,7 @@ export function createApp(options: HttpServerOptions): express.Express {
     // refused here, before handleToolCall ever runs (recon-brain-recall-review #1).
     if (!DOOR_TOOLS.has(name)) {
       res.status(403).json({
-        error: `Tool '${name}' is not available on the HTTP door (allowed: recon_find, recon_explain).`,
+        error: `Tool '${name}' is not available on the HTTP door (allowed: recon_find, recon_explain, recon_drift).`,
       });
       return;
     }

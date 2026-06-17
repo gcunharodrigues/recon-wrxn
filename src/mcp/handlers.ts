@@ -1,9 +1,9 @@
 /**
  * MCP Tool Handlers (v6)
  *
- * Dispatches 8 tool calls to their respective modules:
+ * Dispatches 9 tool calls to their respective modules:
  *   recon_map, recon_find, recon_explain, recon_impact,
- *   recon_changes, recon_rename, recon_export, recon_rules
+ *   recon_changes, recon_rename, recon_export, recon_rules, recon_drift
  */
 
 import { readFileSync, existsSync } from 'fs';
@@ -23,6 +23,7 @@ import { exportGraph } from '../export/exporter.js';
 import type { ExportOptions } from '../export/exporter.js';
 import { analyzeChanges, formatReview } from '../review/reviewer.js';
 import { detectProcesses } from '../graph/process.js';
+import { computeDrift, formatDrift } from './drift.js';
 
 // ─── Helpers ───────────────────────────────────────────────────
 
@@ -241,6 +242,9 @@ export async function handleToolCall(
 
     case 'recon_rules':
       return handleRules(a, graph);
+
+    case 'recon_drift':
+      return handleDrift(graph);
 
     default:
       return JSON.stringify({ error: 'unknown_tool', tool: name });
@@ -938,4 +942,15 @@ function handleRules(
   lines.splice(1, 0, `**Total issues:** ${totalIssues}`);
 
   return lines.join('\n');
+}
+
+// ─── recon_drift ──────────────────────────────────────────────
+
+/**
+ * The computable stale set (sync-03): a pure indexed-graph compare of each
+ * watermarked derived page against its source symbol's current fingerprint.
+ * No args — it reports drift across the whole indexed corpus.
+ */
+function handleDrift(graph: KnowledgeGraph): string {
+  return formatDrift(computeDrift(graph));
 }

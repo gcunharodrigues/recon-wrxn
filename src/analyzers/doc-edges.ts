@@ -24,6 +24,17 @@ import { NodeType, RelationshipType, Language } from '../graph/types.js';
 import type { Node, Relationship } from '../graph/types.js';
 import type { DocCitation } from './markdown.js';
 
+/**
+ * DOCUMENTED_BY provenance confidence by signal kind (doc-ASSERTED, never
+ * code-verified, so both stay < 1.0). A frontmatter `derived_from:` anchor is a
+ * deliberate provenance declaration (stronger); an incidental `file:line` body
+ * citation is weaker. Named so the drift query (sync-03) can tell a declared
+ * `derived_from` anchor edge apart from an incidental citation edge — only the
+ * former carries a `synced_to` watermark.
+ */
+export const ANCHOR_CONFIDENCE = 0.9;
+export const CITATION_CONFIDENCE = 0.5;
+
 /** Prose never documents prose — code nodes AND raw (non-prose) Source artifacts are valid DOCUMENTED_BY targets. */
 function isCodeTarget(node: Node): boolean {
   return node.language !== Language.Markdown;
@@ -137,7 +148,7 @@ export function resolveDocEdges(
       // 1.0 edge — P1.5-D, SEC-LOW). A frontmatter `derived_from` anchor is a
       // deliberate provenance declaration (stronger) than an incidental `file:line`
       // body citation (weaker); both stay < 1.0 to mark them unverified.
-      confidence: c.kind === 'anchor' ? 0.9 : 0.5,
+      confidence: c.kind === 'anchor' ? ANCHOR_CONFIDENCE : CITATION_CONFIDENCE,
     });
   }
   return edges;

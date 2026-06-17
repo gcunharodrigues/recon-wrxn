@@ -126,4 +126,12 @@ export const RECON_TOOLS: ToolDefinition[] = [
       },
     },
   },
+  {
+    name: 'recon_drift',
+    description: 'Documentation drift: which watermarked derived docs are stale because their source symbol changed.\n\nWHEN: Auditing whether docs are still reconciled with the code they describe.\nNOT: Finding what a symbol does (use recon_explain).\nTHEN: Reconcile the stale doc, then re-stamp its synced_to watermark.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {},
+    },
+  },
 ];
