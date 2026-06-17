@@ -380,6 +380,37 @@ describe('SqliteStore', () => {
     expect(node!.props).toEqual(['onClick', 'label', 'disabled']);
   });
 
+  // ─── Prose watermark (sync-01) ──────────────────────────────
+
+  it('preserves a Page node synced_to watermark (via the meta blob)', () => {
+    store.insertNode(makeNode('md:page:docs/guide.md', 'The Guide', {
+      type: NodeType.Page,
+      language: Language.Markdown,
+      file: 'docs/guide.md',
+      package: 'docs',
+      exported: false,
+      syncedTo: 'ast:abc123',
+    }));
+
+    const node = store.getNode('md:page:docs/guide.md');
+    expect(node).not.toBeNull();
+    expect(node!.syncedTo).toBe('ast:abc123');
+  });
+
+  it('a Page node with no watermark has no syncedTo field after round-trip', () => {
+    store.insertNode(makeNode('md:page:docs/plain.md', 'Plain', {
+      type: NodeType.Page,
+      language: Language.Markdown,
+      file: 'docs/plain.md',
+      package: 'docs',
+      exported: false,
+    }));
+
+    const node = store.getNode('md:page:docs/plain.md');
+    expect(node).not.toBeNull();
+    expect('syncedTo' in node!).toBe(false);
+  });
+
   // ─── removeNode ──────────────────────────────────────────────
 
   it('removes a single node by id', () => {

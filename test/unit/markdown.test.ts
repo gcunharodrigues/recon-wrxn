@@ -343,6 +343,55 @@ describe('analyzeMarkdown — file:line citations', () => {
   });
 });
 
+// ─── synced_to watermark (sync-01) ───────────────────────────────
+
+// A derived page may declare the source version it was last reconciled against
+// as a `synced_to: <fingerprint>` frontmatter watermark — parsed alongside
+// `derived_from`, carried as an OPAQUE string on the Page node. R1 stores +
+// exposes whatever string is in frontmatter; no fingerprint computation, no
+// drift compare (sync-02/03).
+describe('analyzeMarkdown — synced_to watermark', () => {
+  it('carries a synced_to frontmatter watermark on the Page node', () => {
+    const md = ['---', 'synced_to: ast:abc123', '---', '# H', 'body', ''].join('\n');
+    const { nodes } = analyzeMarkdown([{ path: 'docs/w.md', content: md }]);
+    const page = nodes.find((n) => n.id === 'md:page:docs/w.md')!;
+    expect(page.syncedTo).toBe('ast:abc123');
+  });
+
+  it('keeps the watermark an opaque string (a path#symbol@sha value is stored verbatim)', () => {
+    const md = ['---', 'synced_to: src/a.ts#login@deadbeef', '---', '# H', 'b', ''].join('\n');
+    const { nodes } = analyzeMarkdown([{ path: 'docs/v.md', content: md }]);
+    const page = nodes.find((n) => n.id === 'md:page:docs/v.md')!;
+    expect(page.syncedTo).toBe('src/a.ts#login@deadbeef');
+  });
+
+  it('puts the watermark on the Page, not on its Sections', () => {
+    const md = ['---', 'synced_to: ast:xyz', '---', '# H', 'b', ''].join('\n');
+    const { nodes } = analyzeMarkdown([{ path: 'docs/s.md', content: md }]);
+    const section = nodes.find((n) => n.type === NodeType.Section)!;
+    expect('syncedTo' in section).toBe(false);
+  });
+
+  it('a page with no synced_to has no watermark (absent, not defaulted — no throw)', () => {
+    const md = ['---', 'title: Plain', '---', '# H', 'body', ''].join('\n');
+    const { nodes } = analyzeMarkdown([{ path: 'docs/p.md', content: md }]);
+    const page = nodes.find((n) => n.id === 'md:page:docs/p.md')!;
+    expect('syncedTo' in page).toBe(false);
+  });
+
+  it('watermark and derived_from coexist (the watermark does not disturb anchor harvest)', () => {
+    const md = ['---', 'derived_from: src/foo.ts', 'synced_to: ast:abc', '---', '# H', 'b', ''].join('\n');
+    const { nodes, citations } = analyzeMarkdown([{ path: 'docs/c.md', content: md }]);
+    const page = nodes.find((n) => n.id === 'md:page:docs/c.md')!;
+    expect(page.syncedTo).toBe('ast:abc');
+    expect(citations).toContainEqual({
+      sourceId: 'md:page:docs/c.md',
+      ref: 'src/foo.ts',
+      kind: 'anchor',
+    });
+  });
+});
+
 // ─── Citation harvest is bounded (ReDoS guard) ───────────────────
 // CITATION_RE backtracks quadratically on a long alphanumeric run with no
 // terminating `:<digit>` (measured: 64k ≈ 4.6s, 1MB > 120s). Run via matchAll on

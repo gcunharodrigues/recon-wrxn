@@ -337,6 +337,23 @@ describe('KnowledgeGraph', () => {
     expect(g2.getOutgoing('md:page:docs/guide.md', RelationshipType.CONTAINS)).toHaveLength(1);
   });
 
+  // sync-01: a Page's synced_to watermark is just another node field, so it
+  // round-trips through the JSON store (serialize → JSON → deserialize) for free.
+  it('round-trips a Page synced_to watermark through the JSON store', () => {
+    const g1 = new KnowledgeGraph();
+    g1.addNode(makeNode('md:page:docs/guide.md', 'The Guide', {
+      type: NodeType.Page,
+      language: Language.Markdown,
+      file: 'docs/guide.md',
+      exported: false,
+      syncedTo: 'ast:abc123',
+    }));
+
+    const g2 = KnowledgeGraph.deserialize(JSON.parse(JSON.stringify(g1.serialize())));
+
+    expect(g2.getNode('md:page:docs/guide.md')!.syncedTo).toBe('ast:abc123');
+  });
+
   // ─── isTest flag ─────────────────────────────────────────────
 
   it('stores isTest flag on nodes', () => {

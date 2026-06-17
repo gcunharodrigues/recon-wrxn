@@ -215,6 +215,23 @@ function parseDerivedFrom(yaml: string): string[] {
 }
 
 /**
+ * Extract the `synced_to:` provenance watermark from raw YAML frontmatter (no
+ * YAML dep). A single scalar carried verbatim — the source version (an AST
+ * fingerprint, sync-02) a derived page was last reconciled against:
+ *   synced_to: ast:abc123              # opaque fingerprint string
+ *   synced_to: src/a.ts#login@deadbeef # path#symbol@sha is stored verbatim too
+ * R1 stores whatever string is present; no fingerprint computation, no drift
+ * compare (sync-02/03). Returns undefined when absent — no default, no throw.
+ */
+function parseSyncedTo(yaml: string): string | undefined {
+  const lines = yaml.split('\n');
+  const idx = lines.findIndex((l) => /^synced_to\s*:/.test(l));
+  if (idx === -1) return undefined;
+  const v = cleanScalar(lines[idx].replace(/^synced_to\s*:/, ''));
+  return v || undefined;
+}
+
+/**
  * `file.ext:line` citations in prose body. Liberal by design: extraction casts a
  * wide net; precision is enforced later, where the edge resolver drops any
  * candidate that does not match a real code node (so a stray `host.com:80` makes
@@ -262,6 +279,7 @@ function analyzeFile(file: MarkdownFile, out: MarkdownAnalysisResult): void {
   const pkg = packageOf(rel);
 
   let title: string | undefined;
+  let syncedTo: string | undefined;
   const pageParts: string[] = [];
 
   // Section nodes in document order; body blocks are attributed to the current
@@ -273,6 +291,8 @@ function analyzeFile(file: MarkdownFile, out: MarkdownAnalysisResult): void {
     if (child.type === 'yaml') {
       const t = frontmatterTitle(child.value);
       if (t) title = t;
+      const w = parseSyncedTo(child.value);
+      if (w) syncedTo = w;
       for (const ref of parseDerivedFrom(child.value)) {
         out.citations.push({ sourceId: pageId, ref, kind: 'anchor' });
       }
@@ -330,6 +350,10 @@ function analyzeFile(file: MarkdownFile, out: MarkdownAnalysisResult): void {
     package: pkg,
     exported: false,
   };
+  // Carry the provenance watermark only when declared — a page without
+  // `synced_to:` leaves the field absent (sync-03 reads that as `unwatermarked`,
+  // distinct from stale). No default.
+  if (syncedTo) pageNode.syncedTo = syncedTo;
   out.nodes.push(pageNode);
   out.searchText[pageId] = [title, ...pageParts].filter(Boolean).join(' ');
 

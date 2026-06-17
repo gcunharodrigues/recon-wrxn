@@ -579,6 +579,46 @@ describe('recon_explain DOCUMENTED_BY traversal', () => {
   });
 });
 
+// ─── synced_to watermark observable on recon_explain (sync-01) ────
+
+describe('recon_explain synced_to watermark', () => {
+  it('shows the Synced To watermark on a page that has one', async () => {
+    const g = buildMockGraph();
+    g.addNode(makeNode('md:page:docs/auth.md', 'Auth Concept Guide', {
+      type: NodeType.Page,
+      file: 'docs/auth.md',
+      language: Language.Markdown,
+      package: 'docs',
+      exported: false,
+      syncedTo: 'ast:abc123',
+    }));
+
+    const result = await handleToolCall('recon_explain', {
+      name: 'Auth Concept Guide',
+    }, g);
+
+    expect(result).toContain('**Synced To:** ast:abc123');
+  });
+
+  it('shows no Synced To line on a page without a watermark', async () => {
+    const g = buildMockGraph();
+    g.addNode(makeNode('md:page:docs/plain.md', 'Plain Guide', {
+      type: NodeType.Page,
+      file: 'docs/plain.md',
+      language: Language.Markdown,
+      package: 'docs',
+      exported: false,
+    }));
+
+    const result = await handleToolCall('recon_explain', {
+      name: 'Plain Guide',
+    }, g);
+
+    expect(result).toContain('# Context: Plain Guide');
+    expect(result).not.toContain('Synced To');
+  });
+});
+
 describe('recon_map prose type-gate', () => {
   it('excludes prose from the language counts', async () => {
     const g = new KnowledgeGraph();

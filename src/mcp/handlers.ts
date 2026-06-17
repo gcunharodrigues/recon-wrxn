@@ -490,6 +490,9 @@ function handleExplain(
     `**Package:** ${node.package}`,
     `**Exported:** ${node.exported}`,
     ...(node.community ? [`**Community:** ${node.community}`] : []),
+    // Prose provenance watermark (sync-01): shown only on a page that declares
+    // a `synced_to:` so the field stays absent on the code-symbol majority.
+    ...(node.syncedTo ? [`**Synced To:** ${node.syncedTo}`] : []),
     '',
   ];
 

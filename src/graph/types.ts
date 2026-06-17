@@ -111,6 +111,9 @@ export interface Node {
   importPath?: string;     // Go import path
   files?: string[];        // Files in package/module
   imports?: string[];      // Direct import paths
+
+  // Prose-specific (optional)
+  syncedTo?: string;       // sync watermark: the source fingerprint a derived page was last reconciled against (sync-01)
 }
 
 // ─── Relationship ───────────────────────────────────────────────
