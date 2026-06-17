@@ -24,6 +24,7 @@ import type { ExportOptions } from '../export/exporter.js';
 import { analyzeChanges, formatReview } from '../review/reviewer.js';
 import { detectProcesses } from '../graph/process.js';
 import { computeDrift, formatDrift } from './drift.js';
+import type { DriftReport } from './drift.js';
 
 // ─── Helpers ───────────────────────────────────────────────────
 
@@ -953,4 +954,30 @@ function handleRules(
  */
 function handleDrift(graph: KnowledgeGraph): string {
   return formatDrift(computeDrift(graph));
+}
+
+/**
+ * Structured recon_drift for the HTTP door (sync-08). Returns the agent-facing
+ * markdown — byte-identical to the stdio recon_drift output — AND the full
+ * structured `DriftReport` the kernel sync loop (sync-04) reads for the
+ * machine-readable stale set. Mirrors findStructured/explainStructured: a SEPARATE
+ * projection of the SAME computeDrift call, so the markdown the stdio path emits
+ * stays untouched. recon_drift takes no args (it reports across the whole indexed
+ * corpus); `args` is accepted only for door-call parity with its siblings.
+ * Mirrors handleToolCall's empty-graph guard so the markdown matches stdio exactly;
+ * on that guard the report is the empty (all-buckets-empty) shape.
+ */
+export function driftStructured(
+  args: Record<string, unknown> | undefined,
+  graph: KnowledgeGraph,
+): { result: string; drift: DriftReport } {
+  void args;
+  if (graph.nodeCount === 0) {
+    return {
+      result: emptyGraph().toJSON(),
+      drift: { stale: [], unwatermarked: [], multiAnchor: [], uncomparable: [], fresh: 0 },
+    };
+  }
+  const report = computeDrift(graph);
+  return { result: formatDrift(report), drift: report };
 }

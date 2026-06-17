@@ -21,7 +21,7 @@ import cors from 'cors';
 import type { KnowledgeGraph } from '../graph/graph.js';
 import type { VectorStoreSource } from '../mcp/server.js';
 import { RECON_TOOLS } from '../mcp/tools.js';
-import { handleToolCall, findStructured, explainStructured } from '../mcp/handlers.js';
+import { handleToolCall, findStructured, explainStructured, driftStructured } from '../mcp/handlers.js';
 
 import {
   getResourceDefinitions,
@@ -132,6 +132,18 @@ export function createApp(options: HttpServerOptions): express.Express {
       if (name === 'recon_explain') {
         const { result, neighbors } = explainStructured(args, graph);
         res.json({ result, neighbors });
+        return;
+      }
+      // recon_drift rides a structured `drift` sidecar — the full DriftReport
+      // ({ stale, unwatermarked, multiAnchor, uncomparable, fresh }) — ALONGSIDE the
+      // markdown, which stays byte-identical to the stdio output (sync-08). CROSS-REPO
+      // CONTRACT: the kernel sync loop (sync-04 sync.cjs) reads `parsed.drift.stale`
+      // and `parsed.drift.unwatermarked` off this body; mirrors the find `hits` /
+      // explain `neighbors` sidecars. Without it recon_drift fell to the generic
+      // { result } path below — markdown only — so the kernel saw no stale set.
+      if (name === 'recon_drift') {
+        const { result, drift } = driftStructured(args, graph);
+        res.json({ result, drift });
         return;
       }
       const result = await handleToolCall(
