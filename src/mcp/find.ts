@@ -9,6 +9,7 @@ import type { KnowledgeGraph, Node } from '../graph/index.js';
 import { NodeType, RelationshipType } from '../graph/index.js';
 import { mergeWithRRF } from '../search/hybrid-search.js';
 import type { VectorStore } from '../search/vector-store.js';
+import { applyDecayRanking, DEFAULT_HALF_LIFE_DAYS, SHIPPED_DECAY_MODE } from '../analyzers/decay-scorer.js';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -553,7 +554,18 @@ export async function executeFindHybrid(
         semanticScore: f.semanticScore,
       });
     }
-    return applyOptions(results, options);
+    // harvest-09: decay-weight the RRF score by recency × importance before the
+    // final ranking, behind the gate-selected mode (SHIPPED_DECAY_MODE). Prose
+    // carries importance (always, from D1) + last_reinforced (when reinforced);
+    // a node with neither signal gets a neutral factor (1), so its rank — and
+    // every code symbol's rank — is unchanged. The clock is read here (live
+    // wiring) and injected into the pure scorer.
+    const ranked = applyDecayRanking(
+      results,
+      (id) => graph.getNode(id),
+      { now: Date.now(), halfLifeDays: DEFAULT_HALF_LIFE_DAYS, mode: SHIPPED_DECAY_MODE },
+    );
+    return applyOptions(ranked, options);
   } catch {
     return executeFind(graph, query, options, ranker);
   }
