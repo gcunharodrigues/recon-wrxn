@@ -16,7 +16,7 @@ import {
 } from '../../src/analyzers/tree-sitter/index.js';
 import { KnowledgeGraph } from '../../src/graph/index.js';
 import { findCircularDeps } from '../../src/mcp/rules.js';
-import type { FileExtractionResult } from '../../src/analyzers/tree-sitter/index.js';
+import type { FileExtractionResult, ExtractedSymbol } from '../../src/analyzers/tree-sitter/index.js';
 
 // ─── Language Detection ─────────────────────────────────────────
 
@@ -1055,5 +1055,162 @@ describe('cross-language consistency', () => {
         expect(sym.language).toBe(lang);
       }
     }
+  });
+});
+
+// ─── AST Fingerprint (sync-02) ──────────────────────────────────
+//
+// A per-symbol fingerprint computed from the tree-sitter AST STRUCTURE (not a raw
+// text hash): a body/signature edit trips it; reformatting (whitespace/indentation)
+// or a comment edit does not. Tested at the public extractFromFile / buildGraph seam.
+
+describe('extractFromFile: AST fingerprint (sync-02)', () => {
+  // The fingerprint of the symbol named `name` extracted from `code`.
+  const fpOf = (file: string, code: string, lang: Language, name: string): string | undefined =>
+    extractFromFile(file, code, lang).symbols.find(s => s.name === name)?.fingerprint;
+
+  // AC1 — a code symbol carries a fingerprint derived from its AST.
+  it('AC1: a function symbol carries a non-empty fingerprint string', () => {
+    const fp = fpOf('f.js', `function add(a, b) { return a + b; }`, Language.JavaScript, 'add');
+    expect(typeof fp).toBe('string');
+    expect(fp).toBeTruthy();
+  });
+
+  // AC1 — structural, NOT a raw-text hash: two reformat-equivalent (text-different)
+  // sources must hash to the SAME fingerprint (a text hash would differ).
+  it('AC1: the fingerprint is structural, not a raw-text hash', () => {
+    const denseSrc = `function add(a,b){return a+b;}`;
+    const spacedSrc = `function add(a, b) {\n    return a + b;\n}`;
+    expect(denseSrc).not.toBe(spacedSrc); // raw text differs
+    const dense = fpOf('f.js', denseSrc, Language.JavaScript, 'add');
+    const spaced = fpOf('f.js', spacedSrc, Language.JavaScript, 'add');
+    expect(dense).toBeTruthy();
+    expect(dense).toBe(spaced); // structural fingerprint identical
+  });
+
+  // AC2 — editing the body changes the fingerprint (operator).
+  it('AC2: changing the body operator (a + b → a - b) changes the fingerprint', () => {
+    const a = fpOf('f.js', `function add(a, b) { return a + b; }`, Language.JavaScript, 'add');
+    const b = fpOf('f.js', `function add(a, b) { return a - b; }`, Language.JavaScript, 'add');
+    expect(a).toBeTruthy();
+    expect(b).toBeTruthy();
+    expect(a).not.toBe(b);
+  });
+
+  // AC2 — editing the body changes the fingerprint (literal value).
+  it('AC2: changing a body literal (return 1 → return 2) changes the fingerprint', () => {
+    const a = fpOf('f.js', `function answer() { return 1; }`, Language.JavaScript, 'answer');
+    const b = fpOf('f.js', `function answer() { return 2; }`, Language.JavaScript, 'answer');
+    expect(a).toBeTruthy();
+    expect(a).not.toBe(b);
+  });
+
+  // AC2 — editing the SIGNATURE changes the fingerprint.
+  it('AC2: changing the signature (adding a parameter) changes the fingerprint', () => {
+    const a = fpOf('f.js', `function add(a, b) { return a; }`, Language.JavaScript, 'add');
+    const b = fpOf('f.js', `function add(a, b, c) { return a; }`, Language.JavaScript, 'add');
+    expect(a).toBeTruthy();
+    expect(a).not.toBe(b);
+  });
+
+  // AC3 — reformatting (whitespace/indentation) leaves the fingerprint stable.
+  it('AC3: reformatting (whitespace/indentation) leaves the fingerprint stable', () => {
+    const dense = fpOf('f.js', `function add(a,b){return a+b;}`, Language.JavaScript, 'add');
+    const spaced = fpOf(
+      'f.js',
+      `function add(a, b) {\n\n    return a  +  b;\n\n}`,
+      Language.JavaScript,
+      'add',
+    );
+    expect(dense).toBeTruthy();
+    expect(spaced).toBeTruthy();
+    expect(dense).toBe(spaced);
+  });
+
+  // AC3 — a comment inside the symbol leaves the fingerprint stable.
+  it('AC3: adding a comment inside the body leaves the fingerprint stable', () => {
+    const plain = fpOf('f.js', `function add(a, b) { return a + b; }`, Language.JavaScript, 'add');
+    const commented = fpOf(
+      'f.js',
+      `function add(a, b) {\n  // sum the two inputs\n  return a + b; // result\n}`,
+      Language.JavaScript,
+      'add',
+    );
+    expect(plain).toBeTruthy();
+    expect(commented).toBeTruthy();
+    expect(plain).toBe(commented);
+  });
+
+  // AC4 — deterministic: same source → same fingerprint on repeated extraction.
+  it('AC4: the same source yields the same fingerprint on repeated extraction', () => {
+    const src = `function add(a, b) { return a + b; }`;
+    const a = fpOf('f.js', src, Language.JavaScript, 'add');
+    const b = fpOf('f.js', src, Language.JavaScript, 'add');
+    expect(a).toBeTruthy();
+    expect(a).toBe(b);
+  });
+
+  // AC4 — position-independent: the same symbol body at a different position (and in
+  // a different file) yields the same fingerprint (proves it's a pure function of AST
+  // structure, the basis for stability across runs/processes).
+  it('AC4: the fingerprint is position-independent (same body, shifted position)', () => {
+    const a = fpOf('a.js', `function add(a, b) { return a + b; }`, Language.JavaScript, 'add');
+    const b = fpOf('b.js', `const z = 0;\n\nfunction add(a, b) { return a + b; }`, Language.JavaScript, 'add');
+    expect(a).toBeTruthy();
+    expect(a).toBe(b);
+  });
+
+  // AC5 — computed at index time for every supported language (no throw).
+  it('AC5: every supported language yields a fingerprint for its function symbol', () => {
+    const cases: [string, string, Language, string][] = [
+      ['m.py', 'def hello():\n    return 1\n', Language.Python, 'hello'],
+      ['l.rs', 'fn hello() -> i32 { 1 }', Language.Rust, 'hello'],
+      ['M.java', 'class M { void hello() { int x = 1; } }', Language.Java, 'hello'],
+      ['m.c', 'int hello() { return 1; }', Language.C, 'hello'],
+      ['m.cpp', 'int hello() { return 1; }', Language.Cpp, 'hello'],
+      ['m.cjs', 'function hello() { return 1; }', Language.JavaScript, 'hello'],
+    ];
+    for (const [file, code, lang, name] of cases) {
+      const fp = fpOf(file, code, lang, name);
+      expect(fp, `${lang}:${name}`).toBeTruthy();
+      expect(typeof fp).toBe('string');
+    }
+  });
+
+  // AC5 — absent gracefully: a symbol with no fingerprint threads through graph
+  // construction with the field ABSENT (not a null/undefined value) and no throw.
+  it('AC5: a symbol lacking a fingerprint yields a node with the field absent (no throw)', () => {
+    const sym: ExtractedSymbol = {
+      id: 'x:func:f.x:noBody',
+      name: 'noBody',
+      type: NodeType.Function,
+      file: 'f.x',
+      startLine: 1,
+      endLine: 1,
+      language: Language.JavaScript,
+      package: '',
+      exported: true,
+      // no fingerprint
+    };
+    const map = new Map<string, FileExtractionResult>([
+      ['f.x', { symbols: [sym], calls: [], imports: [], heritage: [] }],
+    ]);
+    let result!: ReturnType<typeof buildGraphFromExtractions>;
+    expect(() => { result = buildGraphFromExtractions(map); }).not.toThrow();
+    const node = result.nodes.find(n => n.id === sym.id);
+    expect(node).toBeDefined();
+    expect('fingerprint' in node!).toBe(false);
+  });
+
+  // The fingerprint reaches the graph Node (threaded through buildGraphFromExtractions).
+  it('threads the fingerprint onto the graph Node', () => {
+    const map = new Map<string, FileExtractionResult>([
+      ['f.cjs', extractFromFile('f.cjs', `function add(a, b) { return a + b; }`, Language.JavaScript)],
+    ]);
+    const result = buildGraphFromExtractions(map);
+    const node = result.nodes.find(n => n.name === 'add');
+    expect(node).toBeDefined();
+    expect(typeof node!.fingerprint).toBe('string');
+    expect(node!.fingerprint).toBeTruthy();
   });
 });

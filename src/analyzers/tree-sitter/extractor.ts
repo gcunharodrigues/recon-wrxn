@@ -12,6 +12,7 @@ import type { Node, Relationship } from '../../graph/types.js';
 import type { AnalyzerResult } from '../types.js';
 import { LANGUAGE_QUERIES } from './queries.js';
 import { setParserLanguage, isLanguageAvailable, getLanguageForFile } from './parser.js';
+import { hashContent } from '../../utils/hash.js';
 
 // ─── Test File Detection ────────────────────────────────────────
 
@@ -192,6 +193,7 @@ export interface ExtractedSymbol {
   exported: boolean;
   isTest?: boolean;
   decorators?: string[];
+  fingerprint?: string; // sync-02: stable AST-structure fingerprint (reformat/comment-insensitive)
 }
 
 export interface ExtractedCall {
@@ -443,6 +445,10 @@ export function extractFromFile(
       : matchedAnnotations.length > 0 ? matchedAnnotations : undefined;
     const symbolIsTest = fileIsTest || isTestMarked;
 
+    // sync-02: fingerprint the live tree-sitter subtree here — the AST is gone
+    // downstream (only name/range survive into ExtractedSymbol / the graph Node).
+    const fingerprint = astFingerprint(defNode);
+
     symbols.push({
       id,
       name,
@@ -455,6 +461,7 @@ export function extractFromFile(
       exported: isExported(name, language, defNode || nameNode),
       ...(symbolIsTest ? { isTest: true } : {}),
       ...(attachedDecorators && attachedDecorators.length > 0 ? { decorators: [...attachedDecorators] } : {}),
+      ...(fingerprint ? { fingerprint } : {}),
     });
   }
 
@@ -506,6 +513,7 @@ export function buildGraphFromExtractions(
         package: sym.package,
         exported: sym.exported,
         ...(sym.isTest ? { isTest: true } : {}),
+        ...(sym.fingerprint ? { fingerprint: sym.fingerprint } : {}),
       });
 
       if (!symbolsByName.has(sym.name)) {
@@ -850,6 +858,60 @@ function getDefinitionNode(captureMap: Record<string, any>): any | null {
     if (captureMap[key]) return captureMap[key];
   }
   return null;
+}
+
+// ─── AST Fingerprint (sync-02) ──────────────────────────────────
+
+/**
+ * Stable structural fingerprint of a code symbol's tree-sitter subtree.
+ *
+ * Walks the node's full child tree into an S-expression of node TYPES plus
+ * leaf-token TEXT, with `comment`-type nodes skipped at every depth. tree-sitter
+ * emits no nodes for whitespace/indentation, so reformatting and comment edits
+ * leave the S-expression — and thus the fingerprint — unchanged, while a
+ * body/signature edit (different tokens or structure) changes it. The S-expression
+ * is SHA-256-hashed (truncated) for a compact, deterministic id: the same AST
+ * yields the same fingerprint across runs and processes. This is STRUCTURAL, not a
+ * raw-text hash (whitespace/comments never enter it).
+ *
+ * Returns undefined when there is no node to fingerprint, or on any walk error
+ * (absent gracefully — never throws).
+ */
+function astFingerprint(node: any): string | undefined {
+  if (!node) return undefined;
+  try {
+    const sexpr = astSExpr(node);
+    if (!sexpr) return undefined;
+    return hashContent(sexpr).slice(0, 16);
+  } catch {
+    return undefined;
+  }
+}
+
+/** A `comment` node (any grammar's `comment`/`line_comment`/`block_comment`) is skipped. */
+function isCommentType(type: string): boolean {
+  return type.includes('comment');
+}
+
+/**
+ * The structural S-expression for a tree-sitter node: `(type child …)` for inner
+ * nodes, `(type "text")` for leaf tokens. Leaf text (identifiers, literals,
+ * operators, keywords) is JSON-escaped to avoid delimiter ambiguity, so a
+ * body/signature token change is caught; comment subtrees contribute the empty
+ * string and are dropped, so a symbol reads identically with or without comments.
+ */
+function astSExpr(node: any): string {
+  const type: string = node.type;
+  if (isCommentType(type)) return '';
+  if (node.childCount === 0) {
+    return `(${type} ${JSON.stringify(node.text)})`;
+  }
+  const parts: string[] = [];
+  for (const child of node.children) {
+    const s = astSExpr(child);
+    if (s) parts.push(s);
+  }
+  return parts.length ? `(${type} ${parts.join(' ')})` : `(${type})`;
 }
 
 function nodeTypeToIdSegment(type: NodeType): string {

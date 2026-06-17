@@ -114,6 +114,9 @@ export interface Node {
 
   // Prose-specific (optional)
   syncedTo?: string;       // sync watermark: the source fingerprint a derived page was last reconciled against (sync-01)
+
+  // Code-symbol-specific (optional)
+  fingerprint?: string;    // sync-02: stable fingerprint of the symbol's tree-sitter AST (body/signature-sensitive, reformat/comment-insensitive)
 }
 
 // ─── Relationship ───────────────────────────────────────────────
