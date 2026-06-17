@@ -11,6 +11,7 @@
 import { describe, it, expect } from 'vitest';
 import { analyzeMarkdown } from '../../src/analyzers/markdown.js';
 import type { MarkdownFile } from '../../src/analyzers/markdown.js';
+import { TIER_PRIORS, NEUTRAL_IMPORTANCE } from '../../src/analyzers/prose-signals.js';
 import { NodeType, RelationshipType, Language } from '../../src/graph/types.js';
 
 // ─── Fixtures ────────────────────────────────────────────────────
@@ -400,6 +401,60 @@ describe('analyzeMarkdown — synced_to watermark', () => {
     expect(C0_CONTROL.test(page.syncedTo!)).toBe(false);
     expect(page.syncedTo).toContain('ast:');
     expect(page.syncedTo).toContain('abc');
+  });
+});
+
+// ─── importance ingest (harvest-07 / D1) ─────────────────────────
+
+// A prose page may carry a 0–1 `importance:` score in frontmatter (written by
+// harvest-10's dream stamp) — parsed alongside `synced_to`, carried on the Page
+// node for harvest-09's decay-weighted scorer. UNLIKE the watermark, importance
+// is NEVER absent on a Page: when the frontmatter value is missing or invalid it
+// defaults to the page's TIER PRIOR (prose-signals.ts), never throwing.
+describe('analyzeMarkdown — importance ingest', () => {
+  it('carries a valid 0–1 importance frontmatter value on the Page node', () => {
+    const md = ['---', 'importance: 0.8', '---', '# H', 'body', ''].join('\n');
+    const { nodes } = analyzeMarkdown([{ path: '.wrxn/wiki/concepts/i.md', content: md }]);
+    const page = nodes.find((n) => n.type === NodeType.Page)!;
+    expect(page.importance).toBe(0.8);
+  });
+
+  it('defaults to the TIER PRIOR when importance is absent (concepts)', () => {
+    const md = ['---', 'title: Plain', '---', '# H', 'body', ''].join('\n');
+    const { nodes } = analyzeMarkdown([{ path: '.wrxn/wiki/concepts/p.md', content: md }]);
+    const page = nodes.find((n) => n.type === NodeType.Page)!;
+    expect(page.importance).toBe(TIER_PRIORS.concepts);
+  });
+
+  it('defaults a non-wiki page to the NEUTRAL importance', () => {
+    const md = '# H\nbody\n';
+    const { nodes } = analyzeMarkdown([{ path: 'docs/guide.md', content: md }]);
+    const page = nodes.find((n) => n.type === NodeType.Page)!;
+    expect(page.importance).toBe(NEUTRAL_IMPORTANCE);
+  });
+
+  it('falls back to the tier prior when importance is invalid (non-number / out of range), no throw', () => {
+    for (const bad of ['high', '1.5', '-0.3']) {
+      const md = ['---', `importance: ${bad}`, '---', '# H', 'b', ''].join('\n');
+      const { nodes } = analyzeMarkdown([{ path: '.wrxn/wiki/gotchas/b.md', content: md }]);
+      const page = nodes.find((n) => n.type === NodeType.Page)!;
+      expect(page.importance).toBe(TIER_PRIORS.gotchas);
+    }
+  });
+
+  it('puts importance on the Page, not on its Sections', () => {
+    const md = ['---', 'importance: 0.9', '---', '# H', 'b', ''].join('\n');
+    const { nodes } = analyzeMarkdown([{ path: '.wrxn/wiki/concepts/s.md', content: md }]);
+    const section = nodes.find((n) => n.type === NodeType.Section)!;
+    expect('importance' in section).toBe(false);
+  });
+
+  it('importance and synced_to coexist on the Page node', () => {
+    const md = ['---', 'synced_to: ast:abc', 'importance: 0.42', '---', '# H', 'b', ''].join('\n');
+    const { nodes } = analyzeMarkdown([{ path: '.wrxn/wiki/decisions/c.md', content: md }]);
+    const page = nodes.find((n) => n.type === NodeType.Page)!;
+    expect(page.syncedTo).toBe('ast:abc');
+    expect(page.importance).toBe(0.42);
   });
 });
 

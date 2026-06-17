@@ -114,6 +114,8 @@ export interface Node {
 
   // Prose-specific (optional)
   syncedTo?: string;       // sync watermark: the source fingerprint a derived page was last reconciled against (sync-01)
+  importance?: number;     // harvest-07: decay-weight importance prior (0–1) — `importance:` frontmatter (harvest-10) or a tier prior; read by harvest-09's scorer
+  lastReinforced?: string; // harvest-07: recency timestamp from .wrxn/reinforce.json, joined by wiki-root-relative path (kernel reinforce-stamp, harvest-08)
 
   // Code-symbol-specific (optional)
   fingerprint?: string;    // sync-02: stable fingerprint of the symbol's tree-sitter AST (body/signature-sensitive, reformat/comment-insensitive)

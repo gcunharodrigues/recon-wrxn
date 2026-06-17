@@ -25,6 +25,7 @@ import { initEmbedder, embedBatch, disposeEmbedder, DEFAULT_CONFIG } from '../se
 import { analyzeTreeSitter, analyzeTreeSitterParallel } from '../analyzers/tree-sitter/index.js';
 import { analyzeMarkdown, findMarkdownFiles } from '../analyzers/markdown.js';
 import type { MarkdownAnalysisResult } from '../analyzers/markdown.js';
+import { loadReinforceSidecar, applyRecency } from '../analyzers/prose-signals.js';
 import type { AnalyzerWarning } from '../analyzers/types.js';
 import { analyzeSource, findSourceFiles } from '../analyzers/source.js';
 import { resolveDocEdges } from '../analyzers/doc-edges.js';
@@ -88,6 +89,13 @@ async function ingestProse(
 ): Promise<MarkdownAnalysisResult & { fileHashes: Record<string, string>; sourceWarnings: AnalyzerWarning[] }> {
   const files = findMarkdownFiles(walkRoot, ignore, maxFileSize);
   const mdResult = analyzeMarkdown(files);
+  // Carry reinforce-recency onto prose Page nodes from the .wrxn/reinforce.json
+  // sidecar (harvest-07 / D1). Keyed by wiki-root-relative path — IDENTICAL to
+  // the key the kernel reinforce-stamp (harvest-08) writes. Fail-open: an absent
+  // or malformed sidecar leaves pages without recency, serve unaffected. The
+  // sidecar lives under walkRoot (the repo being indexed, whose pages' wiki-rel
+  // paths it keys). Pure ingest — the decay-weight scorer (harvest-09) reads it.
+  applyRecency(mdResult.nodes, loadReinforceSidecar(walkRoot));
   for (const node of mdResult.nodes) {
     graph.addNode(node);
   }

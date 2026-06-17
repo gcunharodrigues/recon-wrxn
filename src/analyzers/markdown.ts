@@ -31,6 +31,7 @@ import { NodeType, RelationshipType, Language } from '../graph/types.js';
 import type { Node, Relationship } from '../graph/types.js';
 import type { AnalyzerWarning } from './types.js';
 import { IGNORE_DIRS } from './ignore.js';
+import { tierPriorFor, clampImportance } from './prose-signals.js';
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -232,6 +233,20 @@ function parseSyncedTo(yaml: string): string | undefined {
 }
 
 /**
+ * Extract the `importance:` decay-weight prior from raw YAML frontmatter (no YAML
+ * dep) — a single 0–1 scalar (harvest-07 / D1), written by harvest-10's dream
+ * stamp. Returns the validated number, or undefined when absent OR invalid
+ * (non-number / out of [0,1]); the caller then defaults to the page's tier prior.
+ * No throw. See prose-signals.ts for the validation + tier-prior contract.
+ */
+function parseImportance(yaml: string): number | undefined {
+  const lines = yaml.split('\n');
+  const idx = lines.findIndex((l) => /^importance\s*:/.test(l));
+  if (idx === -1) return undefined;
+  return clampImportance(cleanScalar(lines[idx].replace(/^importance\s*:/, '')));
+}
+
+/**
  * `file.ext:line` citations in prose body. Liberal by design: extraction casts a
  * wide net; precision is enforced later, where the edge resolver drops any
  * candidate that does not match a real code node (so a stray `host.com:80` makes
@@ -280,6 +295,7 @@ function analyzeFile(file: MarkdownFile, out: MarkdownAnalysisResult): void {
 
   let title: string | undefined;
   let syncedTo: string | undefined;
+  let importance: number | undefined;
   const pageParts: string[] = [];
 
   // Section nodes in document order; body blocks are attributed to the current
@@ -293,6 +309,8 @@ function analyzeFile(file: MarkdownFile, out: MarkdownAnalysisResult): void {
       if (t) title = t;
       const w = parseSyncedTo(child.value);
       if (w) syncedTo = w;
+      const imp = parseImportance(child.value);
+      if (imp !== undefined) importance = imp;
       for (const ref of parseDerivedFrom(child.value)) {
         out.citations.push({ sourceId: pageId, ref, kind: 'anchor' });
       }
@@ -354,6 +372,12 @@ function analyzeFile(file: MarkdownFile, out: MarkdownAnalysisResult): void {
   // `synced_to:` leaves the field absent (sync-03 reads that as `unwatermarked`,
   // distinct from stale). No default.
   if (syncedTo) pageNode.syncedTo = stripControlChars(syncedTo);
+  // Always carry a decay-weight importance on a Page (harvest-07 / D1): the
+  // declared `importance:` when valid, else the page's tier prior — so the
+  // scorer (harvest-09) never sees an un-prioritized page. Recency is a SEPARATE,
+  // serve-time sidecar join (applyRecency in commands.ts ingestProse) since it
+  // needs the install root, not just the file content.
+  pageNode.importance = importance ?? tierPriorFor(rel);
   out.nodes.push(pageNode);
   out.searchText[pageId] = [title, ...pageParts].filter(Boolean).join(' ');
 
