@@ -20,7 +20,7 @@
  * the key. harvest-09 + ADR 0005 reference TIER_PRIORS from this module.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { NodeType } from '../graph/types.js';
 import type { Node } from '../graph/types.js';
@@ -30,6 +30,15 @@ const WIKI_ROOT_PREFIX = '.wrxn/wiki/';
 
 /** The coalesced recency sidecar — `<install-root>/.wrxn/reinforce.json` (STATE). */
 const REINFORCE_SIDECAR = join('.wrxn', 'reinforce.json');
+
+/**
+ * Hard byte ceiling on the recency sidecar read (memory-DoS guard). A legitimate
+ * reinforce.json is one short ISO date per wiki page (~60 bytes/entry); even a
+ * 50k-page wiki is ~3 MB, so 8 MB is comfortable headroom while bounding a
+ * giant-blob `readFileSync` into memory — mirroring the `maxFileSize` cap already
+ * applied to `.md` ingest. Over-cap → treated as absent (fail-open).
+ */
+const MAX_SIDECAR_BYTES = 8 * 1024 * 1024;
 
 /**
  * Per-tier importance priors — the default a Page gets when it carries no valid
@@ -96,12 +105,15 @@ export function clampImportance(raw: string | undefined): number | undefined {
 /**
  * The coalesced recency sidecar: wiki-root-relative path → day-granular
  * `last_reinforced` timestamp. Read fail-open from `<root>/.wrxn/reinforce.json`
- * — an absent file, malformed JSON, or a non-object payload → {} (no recency;
- * serve unaffected). Only string-valued entries are kept. Never throws.
+ * — an absent file, an over-cap file (> MAX_SIDECAR_BYTES), malformed JSON, or a
+ * non-object payload → {} (no recency; serve unaffected). Only string-valued
+ * entries are kept. Never throws.
  */
 export function loadReinforceSidecar(root: string): Record<string, string> {
   try {
-    const raw = readFileSync(join(root, REINFORCE_SIDECAR), 'utf-8');
+    const path = join(root, REINFORCE_SIDECAR);
+    if (statSync(path).size > MAX_SIDECAR_BYTES) return {}; // over-cap → treat as absent
+    const raw = readFileSync(path, 'utf-8');
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
     const out: Record<string, string> = {};

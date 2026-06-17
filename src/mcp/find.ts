@@ -32,7 +32,7 @@ export interface FindResult {
   // paths. formatFindResults ignores these (the agent markdown is unchanged) — the
   // HTTP door projects them into the structured `hits` array (toFindHits) for
   // node-stdlib consumers (the Recall hook) that cannot compute a cosine themselves.
-  score?: number;                     // combined RRF score
+  score?: number;                     // combined RRF score — on the hybrid path, decay-weighted (raw arm scores stay in bm25Score/semanticScore)
   sources?: ('bm25' | 'semantic')[];  // arm provenance; both arms = the consensus signal
   bm25Score?: number;                 // original BM25 score
   semanticScore?: number;             // original cosine similarity (semantic arm)

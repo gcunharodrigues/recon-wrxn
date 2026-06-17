@@ -145,6 +145,22 @@ describe('loadReinforceSidecar — fail-open recency sidecar read', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('ignores an over-cap sidecar gracefully (memory-DoS guard — {}, no throw)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'recon-reinforce-'));
+    try {
+      mkdirSync(join(root, '.wrxn'), { recursive: true });
+      // Valid JSON whose byte size exceeds the cap — trailing whitespace is legal
+      // JSON, so an UNCAPPED reader would parse + return the entry. The cap must
+      // skip the read entirely (stat-and-cap) and fall back to {}.
+      const oversize =
+        JSON.stringify({ 'concepts/foo.md': '2026-06-17' }) + ' '.repeat(9 * 1024 * 1024);
+      writeFileSync(join(root, '.wrxn', 'reinforce.json'), oversize);
+      expect(loadReinforceSidecar(root)).toEqual({});
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 // ─── applyRecency: carry last_reinforced onto matching Page nodes ──

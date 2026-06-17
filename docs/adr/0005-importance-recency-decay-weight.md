@@ -37,7 +37,7 @@ path, churning git, and racing concurrent readers. The coalesced sidecar records
 ACCESS/reinforcement out-of-band, so the read path stays read-only and recency
 tracks genuine use.
 
-**The decay ships behind a MANDATORY measurement gate.** `src/analyzers/decay-gate.ts`
+**The decay ships behind a MANDATORY measurement gate.** `test/unit/decay-gate.ts`
 measures, on a gold fixture, that FULL decay both (a) SINKS a known-stale page AND
 (b) HOLDS gold-query hit@5 vs the un-weighted baseline (within a stated tolerance).
 The half-life is justified by a recorded sweep (7/14/30/60/90 days), not guessed —

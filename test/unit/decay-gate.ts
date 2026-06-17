@@ -15,8 +15,8 @@
  * test; this module computes the verdict and renders the report text.
  */
 
-import { applyDecayRanking } from './decay-scorer.js';
-import type { DecayMode, DecaySignals } from './decay-scorer.js';
+import { applyDecayRanking } from '../../src/analyzers/decay-scorer.js';
+import type { DecayMode, DecaySignals } from '../../src/analyzers/decay-scorer.js';
 
 /** One entry of a baseline ranking: an id (to resolve decay signals) + its file + score. */
 export interface RankedItem {

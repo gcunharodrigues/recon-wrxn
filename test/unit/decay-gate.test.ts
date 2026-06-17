@@ -18,8 +18,8 @@ import {
   runGate,
   selectDecayMode,
   renderGateReport,
-} from '../../src/analyzers/decay-gate.js';
-import type { GateInput, RankedItem } from '../../src/analyzers/decay-gate.js';
+} from './decay-gate.js';
+import type { GateInput, RankedItem } from './decay-gate.js';
 import { SHIPPED_DECAY_MODE } from '../../src/analyzers/decay-scorer.js';
 import type { DecaySignals } from '../../src/analyzers/decay-scorer.js';
 
