@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [6.0.0-wrxn.6] - 2026-06-18
+
+### Added
+- **Orphaned drift class** — `recon_drift` surfaces pages whose `synced_to` watermark dangles (the code symbol it tracked no longer exists), reported distinctly from `stale`.
+
+### Fixed
+- **Watcher recency on incremental update** — an incremental markdown edit now applies recency decay, not only a full re-index.
+- **npm 11 bin path** — dropped the leading `./` from the `bin` path so npm 11 keeps the executable bit on `recon-wrxn`.
+
+## [6.0.0-wrxn.5] - 2026-06-17
+
+### Added
+- **Decay-weighted retrieval** — prose nodes carry `importance` and a reinforced recency; a decay-weight scorer (recency × importance) feeds the RRF ranking hook so fresh, important pages outrank stale ones. Mandatory decay-weight gate + durable harvest report (ADR 0005).
+
+## [6.0.0-wrxn.4] - 2026-06-17
+
+### Added
+- **`recon_drift` MCP tool** — a computable stale-doc set: each prose page's `synced_to` watermark is diffed against the current AST fingerprint of the code it describes. Rides a structured drift sidecar over the serve door.
+- **Per-symbol AST fingerprint** — every code symbol gets a fingerprint, the basis for drift detection.
+- **`synced_to` watermark** stored and exposed on prose nodes.
+
+### Fixed
+- Drift bucketing hardened — multi-anchor + whole-file buckets, watermark hardening (review fixes).
+
+## [6.0.0-wrxn.3] - 2026-06-16
+
+### Added
+- **HTTP serve door** — concurrent stdio + HTTP server with endpoint discovery; a structured hybrid `find` response served over a live in-memory store.
+- **Hybrid retrieval quality** — weighted RRF fusion plus a semantic floor (tuned to 0.4) so gibberish queries return empty while GOLD-set recall holds.
+- **Mid-session hybrid search** — a detached embed + live store swap brings semantic search online without a serve restart; the watcher refreshes retrieval freshness in place.
+
+### Changed
+- **Watcher burst coalescing** — a burst of file changes collapses to a single rebuild.
+
+### Fixed
+- **Serve hardening** — door-route allowlist, `recon_changes` via `execFile`, fail-open, `0600` socket permissions, structured `explain`, clean `400` on malformed JSON, widened git-ref allowlist.
+- **Doc edges** — doc-asserted edges carry confidence `<1.0`; added a real embedder-seam smoke test.
+
 ## [6.0.0-wrxn.2] - 2026-06-16
 
 ### Added
