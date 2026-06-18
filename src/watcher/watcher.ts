@@ -19,6 +19,7 @@ import { extractFromFile } from '../analyzers/tree-sitter/extractor.js';
 import { getLanguageForFile, isLanguageAvailable } from '../analyzers/tree-sitter/parser.js';
 import { analyzeMarkdown } from '../analyzers/markdown.js';
 import { resolveDocEdges } from '../analyzers/doc-edges.js';
+import { loadReinforceSidecar, applyRecency } from '../analyzers/prose-signals.js';
 import { analyzeSource, BINARY_SOURCE_EXTENSIONS, SOURCE_EXTENSIONS } from '../analyzers/source.js';
 import type { SourceFile } from '../analyzers/source.js';
 import { saveIndex, loadSearchText, saveSearchText } from '../storage/store.js';
@@ -285,7 +286,7 @@ export class ReconWatcher {
       if (event === 'unlink') {
         if (MARKDOWN_EXTENSIONS.has(ext)) {
           // Prune the prose nodes AND the file's search-text.json entries.
-          await this.surgicalUpdateMarkdown(absPath, relPath, 'unlink');
+          await this.surgicalUpdateMarkdown(absPath, relPath, 'unlink', project.dir);
           // Symmetric with the generic branch below: the .md/source branches used
           // to return before the SQLite persist block, leaving deleted nodes in
           // the store. Prune SQLite here too (P1.5-B).
@@ -309,7 +310,7 @@ export class ReconWatcher {
       if (TREE_SITTER_EXTENSIONS.has(ext)) {
         this.surgicalUpdateTreeSitter(absPath, relPath, repoName);
       } else if (MARKDOWN_EXTENSIONS.has(ext)) {
-        await this.surgicalUpdateMarkdown(absPath, relPath, event);
+        await this.surgicalUpdateMarkdown(absPath, relPath, event, project.dir);
       } else if (SOURCE_EXTENSIONS.has(ext)) {
         await this.surgicalUpdateSource(absPath, relPath, event);
       }
@@ -588,6 +589,7 @@ export class ReconWatcher {
     absPath: string,
     relPath: string,
     event: string,
+    walkRoot: string,
   ): Promise<void> {
     // A prose file's node ids ARE its search-text.json keys (every Page/Section
     // node has a searchText entry). Collect them BEFORE removal so the snapshot
@@ -629,6 +631,17 @@ export class ReconWatcher {
       }
 
       const result = analyzeMarkdown([{ path: relPath, content }]);
+      // Carry reinforce-recency onto the reparsed Page node from the project's
+      // .wrxn/reinforce.json sidecar (harvest-07 / D1), keyed by wiki-root-relative
+      // path — MIRRORING commands.ts ingestProse (the full-index site). importance
+      // is re-applied on every parse by analyzeMarkdown, but recency needs the
+      // install root, so without this a live-edited page (e.g. harvest merging
+      // pages) silently loses lastReinforced until the next full re-index,
+      // undercutting decay-weighted retrieval (phase-4.5-01). walkRoot is the
+      // page's project dir (its node.file paths are relative to it), exactly the
+      // root ingestProse reads the sidecar from. Applied before addNode, like
+      // ingestProse. Fail-open: an absent/malformed sidecar leaves no recency.
+      applyRecency(result.nodes, loadReinforceSidecar(walkRoot));
       for (const node of result.nodes) this.graph.addNode(node);
       for (const rel of result.relationships) this.graph.addRelationship(rel);
       // Regenerate doc→code DOCUMENTED_BY edges for THIS page's citations.

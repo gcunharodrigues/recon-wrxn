@@ -23,6 +23,7 @@ import { KnowledgeGraph } from '../../src/graph/graph.js';
 import { saveSearchText, loadSearchText } from '../../src/storage/store.js';
 import { NodeType, RelationshipType, Language } from '../../src/graph/types.js';
 import { BM25Index } from '../../src/search/bm25.js';
+import { TIER_PRIORS } from '../../src/analyzers/prose-signals.js';
 import type { SqliteStore } from '../../src/storage/sqlite.js';
 
 const A_ORIGINAL = '# Alpha\nAlpha body original.\n\n## Section One\nSection one body.\n';
@@ -343,5 +344,50 @@ describe('watcher .md edit reflected by a rebuilt BM25 ranker (slice B fix 3 —
     const hits = freshRanker.search('zphwqx');
     expect(hits.length).toBeGreaterThan(0);
     expect(hits.some((h) => h.nodeId === 'md:page:docs/a.md')).toBe(true);
+  });
+});
+
+// ─── phase-4.5-01: reinforce-recency applied on the live surgical .md path ──
+
+describe('watcher .md change — reinforce-recency applied (phase-4.5-01)', () => {
+  // The full-index path (commands.ts ingestProse) joins .wrxn/reinforce.json
+  // recency onto prose Page nodes via applyRecency. The live surgical path must
+  // do the same, or a live-edited wiki page (e.g. harvest merging pages)
+  // silently loses lastReinforced until the next full re-index — undercutting
+  // the importance×recency decay-weighted retrieval Phase 5 shipped. importance
+  // is re-applied on every parse by analyzeMarkdown, so the gap is recency-specific.
+  const WIKI_REL = '.wrxn/wiki/concepts/widget.md';
+  const PAGE_ID = 'md:page:.wrxn/wiki/concepts/widget.md';
+  const REINFORCED_AT = '2026-06-12';
+
+  beforeEach(() => {
+    // A wiki page under .wrxn/wiki/<tier>/ (so wikiRelativePath is non-null) plus
+    // the coalesced recency sidecar keyed by its WIKI-ROOT-RELATIVE path
+    // (concepts/widget.md) — the SAME pinned key the full index reads.
+    mkdirSync(join(root, '.wrxn', 'wiki', 'concepts'), { recursive: true });
+    writeFileSync(join(root, WIKI_REL), '# Widget\nWidget body original.\n');
+    writeFileSync(
+      join(root, '.wrxn', 'reinforce.json'),
+      JSON.stringify({ 'concepts/widget.md': REINFORCED_AT }),
+    );
+  });
+
+  it('stamps lastReinforced from the sidecar after a live edit (matches a full re-index)', async () => {
+    writeFileSync(join(root, WIKI_REL), '# Widget\nWidget body UPDATED.\n');
+    await fire(WIKI_REL, 'change');
+
+    const page = graph.getNode(PAGE_ID);
+    expect(page).toBeDefined();
+    // RED before the fix: the surgical path never joined recency → undefined.
+    expect(page!.lastReinforced).toBe(REINFORCED_AT);
+  });
+
+  it('leaves importance behavior unchanged (still the concepts tier prior)', async () => {
+    writeFileSync(join(root, WIKI_REL), '# Widget\nWidget body UPDATED.\n');
+    await fire(WIKI_REL, 'change');
+
+    const page = graph.getNode(PAGE_ID);
+    // No `importance:` frontmatter → the concepts tier prior, exactly as before.
+    expect(page!.importance).toBe(TIER_PRIORS.concepts);
   });
 });
