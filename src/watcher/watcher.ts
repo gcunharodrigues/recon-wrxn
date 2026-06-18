@@ -12,13 +12,13 @@
 import chokidar from 'chokidar';
 import type { FSWatcher } from 'chokidar';
 import { readFileSync, statSync } from 'node:fs';
-import { join, relative, resolve, basename } from 'node:path';
+import { relative, resolve } from 'node:path';
 import { KnowledgeGraph } from '../graph/graph.js';
 import { NodeType, RelationshipType } from '../graph/types.js';
 import { extractFromFile } from '../analyzers/tree-sitter/extractor.js';
 import { getLanguageForFile, isLanguageAvailable } from '../analyzers/tree-sitter/parser.js';
 import { analyzeMarkdown } from '../analyzers/markdown.js';
-import { resolveDocEdges } from '../analyzers/doc-edges.js';
+import { resolveDocEdges, RELINK_CONFIDENCE } from '../analyzers/doc-edges.js';
 import { loadReinforceSidecar, applyRecency } from '../analyzers/prose-signals.js';
 import { analyzeSource, BINARY_SOURCE_EXTENSIONS, SOURCE_EXTENSIONS } from '../analyzers/source.js';
 import type { SourceFile } from '../analyzers/source.js';
@@ -430,7 +430,10 @@ export class ReconWatcher {
           type: caller.type,
           sourceId: caller.sourceId,
           targetId: newTargetId,
-          confidence: 0.7,
+          // MUST stay > CITATION_CONFIDENCE so a re-linked derived_from edge survives
+          // recon_drift's confidence filter — else the page false-orphans (see the
+          // RELINK_CONFIDENCE doc in doc-edges.ts, phase-4.5-02).
+          confidence: RELINK_CONFIDENCE,
         });
       }
     }

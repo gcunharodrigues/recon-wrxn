@@ -208,6 +208,20 @@ export function computeDrift(graph: KnowledgeGraph): DriftReport {
 }
 
 /**
+ * Neutralize an operator-controlled string field (page name, symbol, watermark —
+ * sourced from wiki frontmatter) before it is interpolated into the markdown
+ * report: a backtick would break out of the inline code span it sits in, and a
+ * newline would split the one-line bullet — either distorts the rendered report
+ * (SEC-LOW). Applied at RENDER only; the structured `drift` sidecar the kernel
+ * consumes keeps the raw values (the entry objects are never mutated).
+ */
+function esc(value: string): string {
+  return value
+    .replace(/`/g, 'ˋ') // backtick → modifier grave accent: can't terminate a code span
+    .replace(/\s*[\r\n]+\s*/g, ' '); // collapse newline(s) + surrounding whitespace to one space
+}
+
+/**
  * Render a drift report as the agent-facing markdown the recon_drift tool returns.
  * Names the page, the specific source symbol, and `synced_to` vs the current
  * fingerprint for every stale entry (sync-03 AC4).
@@ -243,8 +257,8 @@ export function formatDrift(report: DriftReport): string {
     lines.push(`## Stale (${stale.length})`, '');
     for (const s of stale) {
       lines.push(
-        `- **${s.symbol}** drifted — \`${s.page}\` (\`${s.pageFile}\`) was synced to ` +
-        `\`${s.syncedTo}\`, but \`${s.symbolFile}:${s.symbolLine}\` is now \`${s.current}\``,
+        `- **${esc(s.symbol)}** drifted — \`${esc(s.page)}\` (\`${esc(s.pageFile)}\`) was synced to ` +
+        `\`${esc(s.syncedTo)}\`, but \`${esc(s.symbolFile)}:${s.symbolLine}\` is now \`${esc(s.current)}\``,
       );
     }
     lines.push('');
@@ -254,8 +268,8 @@ export function formatDrift(report: DriftReport): string {
     lines.push(`## Unwatermarked (${unwatermarked.length})`, '');
     for (const u of unwatermarked) {
       lines.push(
-        `- **${u.symbol}** — \`${u.page}\` (\`${u.pageFile}\`) is derived_from ` +
-        `\`${u.symbolFile}:${u.symbolLine}\` but carries no \`synced_to\` watermark`,
+        `- **${esc(u.symbol)}** — \`${esc(u.page)}\` (\`${esc(u.pageFile)}\`) is derived_from ` +
+        `\`${esc(u.symbolFile)}:${u.symbolLine}\` but carries no \`synced_to\` watermark`,
       );
     }
     lines.push('');
@@ -265,8 +279,8 @@ export function formatDrift(report: DriftReport): string {
     lines.push(`## Multi-anchor — unsupported (${multiAnchor.length})`, '');
     for (const m of multiAnchor) {
       lines.push(
-        `- \`${m.page}\` (\`${m.pageFile}\`) is derived_from ${m.symbols.length} symbols ` +
-        `(${m.symbols.map((s) => `**${s}**`).join(', ')}) — multi-target drift is not compared`,
+        `- \`${esc(m.page)}\` (\`${esc(m.pageFile)}\`) is derived_from ${m.symbols.length} symbols ` +
+        `(${m.symbols.map((s) => `**${esc(s)}**`).join(', ')}) — multi-target drift is not compared`,
       );
     }
     lines.push('');
@@ -276,8 +290,8 @@ export function formatDrift(report: DriftReport): string {
     lines.push(`## Uncomparable (${uncomparable.length})`, '');
     for (const u of uncomparable) {
       lines.push(
-        `- **${u.symbol}** — \`${u.page}\` (\`${u.pageFile}\`) is derived_from ` +
-        `\`${u.symbolFile}:${u.symbolLine}\` (${u.reason})`,
+        `- **${esc(u.symbol)}** — \`${esc(u.page)}\` (\`${esc(u.pageFile)}\`) is derived_from ` +
+        `\`${esc(u.symbolFile)}:${u.symbolLine}\` (${esc(u.reason)})`,
       );
     }
     lines.push('');
@@ -287,7 +301,7 @@ export function formatDrift(report: DriftReport): string {
     lines.push(`## Orphaned — dangling watermark (${orphaned.length})`, '');
     for (const o of orphaned) {
       lines.push(
-        `- \`${o.page}\` (\`${o.pageFile}\`) is watermarked to \`${o.syncedTo}\` but its ` +
+        `- \`${esc(o.page)}\` (\`${esc(o.pageFile)}\`) is watermarked to \`${esc(o.syncedTo)}\` but its ` +
         `derived_from source symbol is gone from the graph (renamed/deleted) — provenance dangling`,
       );
     }

@@ -35,6 +35,19 @@ import type { DocCitation } from './markdown.js';
 export const ANCHOR_CONFIDENCE = 0.9;
 export const CITATION_CONFIDENCE = 0.5;
 
+/**
+ * Confidence the live watcher stamps on a DOCUMENTED_BY (and other incoming-caller)
+ * edge it RE-LINKS after a source symbol is EDITED in place (watcher.ts
+ * `relinkCallers`). It MUST stay `> CITATION_CONFIDENCE`: recon_drift (drift.ts
+ * `computeDrift`) keeps only anchor edges with `confidence > CITATION_CONFIDENCE`,
+ * so a re-linked `derived_from` edge below that threshold would be filtered out,
+ * leaving the page with zero anchor targets — and every page documenting a
+ * recently-edited source would flip to FALSE-orphaned (phase-4.5-02 invariant).
+ * Co-located with the other DOCUMENTED_BY confidences so the threshold coupling is
+ * visible at the source of truth.
+ */
+export const RELINK_CONFIDENCE = 0.7;
+
 /** Prose never documents prose — code nodes AND raw (non-prose) Source artifacts are valid DOCUMENTED_BY targets. */
 function isCodeTarget(node: Node): boolean {
   return node.language !== Language.Markdown;

@@ -17,6 +17,7 @@ import { NodeType, RelationshipType, Language } from '../../src/graph/types.js';
 import type { Node, Relationship } from '../../src/graph/types.js';
 import { ANCHOR_CONFIDENCE, CITATION_CONFIDENCE } from '../../src/analyzers/doc-edges.js';
 import { computeDrift, formatDrift } from '../../src/mcp/drift.js';
+import type { DriftReport } from '../../src/mcp/drift.js';
 
 // ─── Fixtures ───────────────────────────────────────────────────
 
@@ -387,5 +388,55 @@ describe('formatDrift — renders the multiAnchor, uncomparable, and orphaned bu
     expect(out).toContain('Orphaned');
     expect(out).toContain('Legacy Guide');
     expect(out).toContain('deadbeefdeadbeef'); // the dangling watermark is surfaced
+  });
+});
+
+// ─── SEC-LOW (review-fix): escape operator-controlled fields in formatDrift ──
+
+// page / symbol / watermark are sourced from wiki frontmatter (operator-controlled).
+// A backtick would break out of the inline code span the field is rendered in; a
+// newline would split the one-line bullet — either distorts the rendered report.
+// formatDrift must neutralize both UNIFORMLY across every bucket, and ONLY in the
+// rendered markdown — the structured `drift` sidecar the kernel consumes keeps the
+// raw values (escape at render, never mutate the entry objects).
+describe('formatDrift — escapes backticks/newlines in operator fields (render-only, all buckets)', () => {
+  const EVIL = 'x`y\nz'; // a backtick (breaks a code span) AND a newline (splits the bullet)
+
+  // The same hostile value in a field of EVERY bucket → if any bucket left it
+  // unescaped, the raw `x`y` / `y\nz` would leak into the output.
+  function reportWithEvilEverywhere(): DriftReport {
+    return {
+      stale: [{ page: EVIL, pageFile: EVIL, symbol: EVIL, symbolFile: EVIL, symbolLine: 1, syncedTo: EVIL, current: EVIL }],
+      unwatermarked: [{ page: EVIL, pageFile: EVIL, symbol: EVIL, symbolFile: EVIL, symbolLine: 2 }],
+      multiAnchor: [{ page: EVIL, pageFile: EVIL, symbols: [EVIL, EVIL], syncedTo: EVIL }],
+      uncomparable: [{ page: EVIL, pageFile: EVIL, symbol: EVIL, symbolFile: EVIL, symbolLine: 3, reason: EVIL }],
+      orphaned: [{ page: EVIL, pageFile: EVIL, syncedTo: EVIL }],
+      fresh: 0,
+    };
+  }
+
+  it('neutralizes the backtick AND newline in every bucket of the rendered report', () => {
+    const out = formatDrift(reportWithEvilEverywhere());
+
+    // GLOBAL uniformity proof: a single un-escaped bucket would leak the raw field
+    // backtick (`x`y`) or the raw field newline (`y`+newline) into the output.
+    expect(out).not.toContain('x`y'); // the field's own backtick is gone everywhere
+    expect(out).not.toContain('y\nz'); // the field's own newline is gone everywhere
+    // the escaped form (backtick → ˋ, newline → single space) is what renders.
+    expect(out).toContain('xˋy z');
+  });
+
+  it('does NOT mutate the structured entries — the kernel sidecar keeps the raw values', () => {
+    const report = reportWithEvilEverywhere();
+    formatDrift(report); // render only
+
+    // every entry object still carries the byte-identical raw field (backtick + newline intact)
+    expect(report.stale[0].page).toBe(EVIL);
+    expect(report.stale[0].syncedTo).toBe(EVIL);
+    expect(report.unwatermarked[0].symbol).toBe(EVIL);
+    expect(report.multiAnchor[0].symbols).toEqual([EVIL, EVIL]);
+    expect(report.uncomparable[0].reason).toBe(EVIL);
+    expect(report.orphaned[0].page).toBe(EVIL);
+    expect(report.orphaned[0].syncedTo).toBe(EVIL);
   });
 });
