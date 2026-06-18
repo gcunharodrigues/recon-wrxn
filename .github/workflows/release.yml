@@ -1,0 +1,32 @@
+name: release
+
+# Publish to npm via OIDC trusted publishing when a release tag is pushed.
+# No NPM_TOKEN: the GitHub Actions OIDC identity authenticates against the
+# trusted-publisher config registered on npmjs.com for this package.
+# Requires: npm CLI >= 11.5.1 (node 24 + the explicit upgrade below) and the
+# id-token: write permission. Emits provenance (publishConfig.provenance).
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm install -g npm@latest
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      # recon versions are semver prereleases (6.0.0-wrxn.N) → npm 11 requires an explicit dist-tag.
+      - run: npm publish --tag latest --access public

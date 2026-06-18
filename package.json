@@ -7,6 +7,9 @@
   "bin": {
     "recon-wrxn": "bin/recon-wrxn"
   },
+  "publishConfig": {
+    "provenance": true
+  },
   "files": [
     "bin/",
     "dist/",
@@ -33,11 +36,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jhm1909/recon.git"
+    "url": "git+https://github.com/gcunharodrigues/recon-wrxn.git"
   },
-  "homepage": "https://github.com/jhm1909/recon#readme",
+  "homepage": "https://github.com/gcunharodrigues/recon-wrxn#readme",
   "bugs": {
-    "url": "https://github.com/jhm1909/recon/issues"
+    "url": "https://github.com/gcunharodrigues/recon-wrxn/issues"
   },
   "license": "MIT",
   "dependencies": {
