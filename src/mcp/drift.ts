@@ -72,11 +72,35 @@ export interface UncomparableEntry {
   reason: string;
 }
 
+/**
+ * A watermarked derived page whose `derived_from` source symbol is ABSENT from the
+ * graph — RENAMED or DELETED, so the symbol node + its DOCUMENTED_BY anchor edge
+ * were removed (graph.ts `removeNodesByFile`), or a re-index left the anchor
+ * unresolvable (doc-edges.ts `resolveAnchor` → no edge), or an anchor edge dangles
+ * to a now-missing node. The page still carries a `synced_to` watermark, so it is
+ * NEITHER `stale` (no live fingerprint to compare) NOR `unwatermarked` (it HAS a
+ * watermark): without this bucket it would silently fall into none and be
+ * un-reconcilable — `sync` would report a false "synced" (phase-4.5-02).
+ *
+ * Mirrors the page-identity + watermark fields a `StaleEntry` carries; the
+ * `symbol`/`symbolFile`/`symbolLine`/`current` fields are necessarily ABSENT —
+ * the source symbol is gone from the graph (and a Page node stores no
+ * `derived_from`, and this query reads no files), so there is no symbol to name
+ * and no current fingerprint to report. That absence is exactly what distinguishes
+ * orphaned (source GONE) from stale (source MOVED).
+ */
+export interface OrphanedEntry {
+  page: string;        // the doc page (node name)
+  pageFile: string;    // the page's file path
+  syncedTo: string;    // the now-dangling watermark — the source it was last reconciled against
+}
+
 export interface DriftReport {
   stale: StaleEntry[];
   unwatermarked: UnwatermarkedEntry[];
   multiAnchor: MultiAnchorEntry[];
   uncomparable: UncomparableEntry[];
+  orphaned: OrphanedEntry[];
   fresh: number; // count of watermarked (page, symbol) pairs whose fingerprint matches
 }
 
@@ -88,6 +112,7 @@ export function computeDrift(graph: KnowledgeGraph): DriftReport {
   const unwatermarked: UnwatermarkedEntry[] = [];
   const multiAnchor: MultiAnchorEntry[] = [];
   const uncomparable: UncomparableEntry[] = [];
+  const orphaned: OrphanedEntry[] = [];
   let fresh = 0;
 
   for (const node of graph.nodes.values()) {
@@ -102,7 +127,22 @@ export function computeDrift(graph: KnowledgeGraph): DriftReport {
       .map((e) => graph.getNode(e.targetId))
       .filter((n): n is Node => Boolean(n));
 
-    if (targets.length === 0) continue; // not a declared-derived page → untracked
+    if (targets.length === 0) {
+      // No resolvable anchor target. A page that ALSO carries a `synced_to`
+      // watermark was once reconciled against a source symbol that is now ABSENT
+      // from the graph — RENAMED or DELETED (its node + DOCUMENTED_BY edge removed
+      // by removeNodesByFile, or its anchor left unresolvable on re-index, or a
+      // dangling edge whose target node is gone). The watermark is the surviving
+      // proof of past provenance, so the page is neither `stale` (no live
+      // fingerprint) nor `unwatermarked` (it HAS a watermark): surface it as
+      // `orphaned` (dangling provenance) rather than silently dropping it
+      // (phase-4.5-02). A page with NO watermark was simply never derived →
+      // genuinely untracked, as before.
+      if (node.syncedTo) {
+        orphaned.push({ page: node.name, pageFile: node.file, syncedTo: node.syncedTo });
+      }
+      continue;
+    }
 
     // More than one anchor target → a single `synced_to` watermark can't be
     // compared against several fingerprints without falsely marking all-but-one
@@ -164,7 +204,7 @@ export function computeDrift(graph: KnowledgeGraph): DriftReport {
     }
   }
 
-  return { stale, unwatermarked, multiAnchor, uncomparable, fresh };
+  return { stale, unwatermarked, multiAnchor, uncomparable, orphaned, fresh };
 }
 
 /**
@@ -173,14 +213,14 @@ export function computeDrift(graph: KnowledgeGraph): DriftReport {
  * fingerprint for every stale entry (sync-03 AC4).
  */
 export function formatDrift(report: DriftReport): string {
-  const { stale, unwatermarked, multiAnchor, uncomparable, fresh } = report;
+  const { stale, unwatermarked, multiAnchor, uncomparable, orphaned, fresh } = report;
 
   const lines: string[] = [
     '# Drift Report',
     '',
     `**Stale:** ${stale.length} | **Unwatermarked:** ${unwatermarked.length} | ` +
       `**Multi-anchor:** ${multiAnchor.length} | **Uncomparable:** ${uncomparable.length} | ` +
-      `**Fresh:** ${fresh}`,
+      `**Orphaned:** ${orphaned.length} | **Fresh:** ${fresh}`,
     '',
   ];
 
@@ -188,7 +228,8 @@ export function formatDrift(report: DriftReport): string {
     stale.length === 0 &&
     unwatermarked.length === 0 &&
     multiAnchor.length === 0 &&
-    uncomparable.length === 0
+    uncomparable.length === 0 &&
+    orphaned.length === 0
   ) {
     lines.push(
       fresh > 0
@@ -237,6 +278,17 @@ export function formatDrift(report: DriftReport): string {
       lines.push(
         `- **${u.symbol}** — \`${u.page}\` (\`${u.pageFile}\`) is derived_from ` +
         `\`${u.symbolFile}:${u.symbolLine}\` (${u.reason})`,
+      );
+    }
+    lines.push('');
+  }
+
+  if (orphaned.length > 0) {
+    lines.push(`## Orphaned — dangling watermark (${orphaned.length})`, '');
+    for (const o of orphaned) {
+      lines.push(
+        `- \`${o.page}\` (\`${o.pageFile}\`) is watermarked to \`${o.syncedTo}\` but its ` +
+        `derived_from source symbol is gone from the graph (renamed/deleted) — provenance dangling`,
       );
     }
     lines.push('');

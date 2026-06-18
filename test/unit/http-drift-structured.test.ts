@@ -66,7 +66,26 @@ describe('recon_drift structured sidecar (sync-08)', () => {
     expect(drift.unwatermarked).toEqual([]);
     expect(drift.multiAnchor).toEqual([]);
     expect(drift.uncomparable).toEqual([]);
+    expect(drift.orphaned).toEqual([]);
     expect(typeof drift.fresh).toBe('number');
+  });
+
+  it('an orphaned page (deleted source) rides the structured drift sidecar over the door (phase-4.5-02 cross-repo contract)', async () => {
+    const g = new KnowledgeGraph();
+    // a watermarked page whose derived_from source symbol is gone → no anchor edge.
+    g.addNode(page('md:page:docs/legacy.md', 'Legacy Guide', { syncedTo: 'cccccccccccccccc' }));
+    const app = createApp({ port: 0, graph: g });
+    const res = await request(app).post('/api/tools/recon_drift').send({});
+
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.drift.orphaned)).toBe(true);
+    expect(res.body.drift.orphaned).toHaveLength(1);
+    expect(res.body.drift.orphaned[0]).toMatchObject({
+      page: 'Legacy Guide',
+      syncedTo: 'cccccccccccccccc',
+    });
+    // distinct: a dangling page is NOT mis-bucketed as stale
+    expect(res.body.drift.stale).toEqual([]);
   });
 
   it('door POST /api/tools/recon_drift returns { result, drift } with drift.stale', async () => {
@@ -102,7 +121,7 @@ describe('recon_drift structured sidecar (sync-08)', () => {
     const graph = new KnowledgeGraph();
     const { result, drift } = driftStructured({}, graph);
     expect(drift).toEqual({
-      stale: [], unwatermarked: [], multiAnchor: [], uncomparable: [], fresh: 0,
+      stale: [], unwatermarked: [], multiAnchor: [], uncomparable: [], orphaned: [], fresh: 0,
     });
     // mirrors handleToolCall's empty-graph guard so the markdown matches stdio exactly
     expect(result).toBe(await handleToolCall('recon_drift', {}, graph));

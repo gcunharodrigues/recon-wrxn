@@ -975,7 +975,7 @@ export function driftStructured(
   if (graph.nodeCount === 0) {
     return {
       result: emptyGraph().toJSON(),
-      drift: { stale: [], unwatermarked: [], multiAnchor: [], uncomparable: [], fresh: 0 },
+      drift: { stale: [], unwatermarked: [], multiAnchor: [], uncomparable: [], orphaned: [], fresh: 0 },
     };
   }
   const report = computeDrift(graph);

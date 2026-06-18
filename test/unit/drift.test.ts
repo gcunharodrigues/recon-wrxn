@@ -201,7 +201,7 @@ describe('formatDrift — renders the AC4 fields', () => {
   });
 
   it('a clean corpus (nothing stale, nothing unwatermarked) renders a no-drift line', () => {
-    const out = formatDrift({ stale: [], unwatermarked: [], multiAnchor: [], uncomparable: [], fresh: 0 });
+    const out = formatDrift({ stale: [], unwatermarked: [], multiAnchor: [], uncomparable: [], orphaned: [], fresh: 0 });
     expect(out.toLowerCase()).toContain('no drift');
   });
 });
@@ -273,9 +273,82 @@ describe('computeDrift — an empty-string watermark is treated as unwatermarked
   });
 });
 
+// ─── phase-4.5-02: orphaned bucket (watermark present, source symbol absent) ──
+
+// When a derived page's `derived_from` source symbol is RENAMED or DELETED, the
+// symbol node + its DOCUMENTED_BY anchor edge are removed from the graph (graph.ts
+// removeNodesByFile), OR a re-index leaves no resolvable anchor (doc-edges.ts
+// resolveAnchor returns undefined → no edge). The page still carries a `synced_to`
+// watermark, so it is NEITHER stale (no live fingerprint to compare) NOR
+// unwatermarked (it HAS a watermark): without a bucket it silently falls into none
+// and `sync` reports a false "synced". It now lands in a distinct `orphaned` bucket
+// (dangling provenance) — the page + its dead watermark, no symbol/current.
+describe('computeDrift — phase-4.5-02 orphaned (dangling watermark) bucket', () => {
+  it('a watermarked page whose source symbol was DELETED (anchor edge gone) is orphaned, not stale/unwatermarked', () => {
+    const g = new KnowledgeGraph();
+    // The derived_from source symbol was deleted: it is ABSENT from the graph, and
+    // removeNodesByFile took its DOCUMENTED_BY anchor edge with it — so the page is
+    // left with a watermark and no anchor edge at all.
+    g.addNode(page('md:page:docs/auth.md', 'Auth Guide', { syncedTo: 'bbbbbbbbbbbbbbbb' }));
+
+    const report = computeDrift(g);
+
+    expect(report.orphaned).toHaveLength(1);
+    expect(report.orphaned[0].page).toBe('Auth Guide');
+    expect(report.orphaned[0].pageFile).toBe('docs/auth.md');
+    expect(report.orphaned[0].syncedTo).toBe('bbbbbbbbbbbbbbbb');
+    // distinct from every other bucket — never double-counted, never dropped
+    expect(report.stale).toHaveLength(0);
+    expect(report.unwatermarked).toHaveLength(0);
+    expect(report.fresh).toBe(0);
+  });
+
+  it('a watermarked page whose anchor edge DANGLES to a now-missing target node is orphaned (the issue mechanism)', () => {
+    const g = new KnowledgeGraph();
+    g.addNode(page('md:page:docs/auth.md', 'Auth Guide', { syncedTo: 'bbbbbbbbbbbbbbbb' }));
+    // An anchor edge whose target symbol node is ABSENT (a dangling edge — e.g. a
+    // partially-rebuilt/deserialized graph). computeDrift drops the missing target;
+    // the watermarked page must still surface as orphaned, never vanish.
+    g.addRelationship(docEdge('md:page:docs/auth.md', 'ts:func:gone', ANCHOR_CONFIDENCE));
+
+    const report = computeDrift(g);
+
+    expect(report.orphaned).toHaveLength(1);
+    expect(report.orphaned[0].syncedTo).toBe('bbbbbbbbbbbbbbbb');
+    expect(report.stale).toHaveLength(0);
+  });
+
+  it('NO FALSE POSITIVE: still-valid watermarked pages (live anchor — fresh AND stale) are never orphaned', () => {
+    const g = new KnowledgeGraph();
+    // a FRESH page: source present, fingerprint matches the watermark.
+    g.addNode(symbol('ts:func:login', 'login', { fingerprint: 'dddddddddddddddd' }));
+    g.addNode(page('md:page:docs/auth.md', 'Auth Guide', { syncedTo: 'dddddddddddddddd' }));
+    g.addRelationship(docEdge('md:page:docs/auth.md', 'ts:func:login', ANCHOR_CONFIDENCE));
+    // a STALE page: source present, fingerprint moved — drift, but NOT orphaned.
+    g.addNode(symbol('ts:func:logout', 'logout', { startLine: 30, endLine: 40, fingerprint: 'aaaaaaaaaaaaaaaa' }));
+    g.addNode(page('md:page:docs/logout.md', 'Logout Guide', { file: 'docs/logout.md', syncedTo: 'cccccccccccccccc' }));
+    g.addRelationship(docEdge('md:page:docs/logout.md', 'ts:func:logout', ANCHOR_CONFIDENCE));
+
+    const report = computeDrift(g);
+
+    expect(report.orphaned).toHaveLength(0); // a resolvable source is never orphaned
+    expect(report.fresh).toBe(1);
+    expect(report.stale).toHaveLength(1);
+  });
+
+  it('a plain page with NO watermark and no resolvable source is NOT orphaned (untracked, not dangling)', () => {
+    const g = new KnowledgeGraph();
+    g.addNode(page('md:page:docs/plain.md', 'Plain Guide')); // no syncedTo, no edge
+    const report = computeDrift(g);
+    expect(report.orphaned).toHaveLength(0);
+    expect(report.stale).toHaveLength(0);
+    expect(report.unwatermarked).toHaveLength(0);
+  });
+});
+
 // ─── formatDrift renders the new buckets ─────────────────────────
 
-describe('formatDrift — renders the multiAnchor and uncomparable buckets', () => {
+describe('formatDrift — renders the multiAnchor, uncomparable, and orphaned buckets', () => {
   it('lists a multi-anchor page and an uncomparable page in the output', () => {
     const out = formatDrift({
       stale: [],
@@ -293,11 +366,26 @@ describe('formatDrift — renders the multiAnchor and uncomparable buckets', () 
           reason: 'no fingerprint / whole-file target',
         },
       ],
+      orphaned: [],
       fresh: 0,
     });
     expect(out).toContain('Multi Guide');
     expect(out).toContain('login');
     expect(out).toContain('Whole Guide');
     expect(out).toContain('auth.ts');
+  });
+
+  it('lists an orphaned (dangling-watermark) page with its dead watermark (phase-4.5-02)', () => {
+    const out = formatDrift({
+      stale: [],
+      unwatermarked: [],
+      multiAnchor: [],
+      uncomparable: [],
+      orphaned: [{ page: 'Legacy Guide', pageFile: 'docs/legacy.md', syncedTo: 'deadbeefdeadbeef' }],
+      fresh: 0,
+    });
+    expect(out).toContain('Orphaned');
+    expect(out).toContain('Legacy Guide');
+    expect(out).toContain('deadbeefdeadbeef'); // the dangling watermark is surfaced
   });
 });
