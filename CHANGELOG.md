@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [6.0.0-wrxn.7] - 2026-06-20
+
+### Fixed
+- **serve-endpoint discovery race (#4)** — concurrent `serve` processes no longer clobber each other's discovery file, which had left a live HTTP query door unannounced (kernel recall silently went dark). `removeEndpoint` is now pid-guarded (deletes the file only when it owns it), `claimEndpoint` writes only when the file is free (absent / dead-pid owner), and a ~10s `unref()`'d heartbeat lets a surviving serve re-claim the file after the announcing serve dies. The `{pid,port}` single-file discovery contract, path, and 0600 mode are unchanged — readers (kernel recall hook, `wrxn brain query`) need no change.
+
 ## [6.0.0-wrxn.6] - 2026-06-18
 
 ### Added
