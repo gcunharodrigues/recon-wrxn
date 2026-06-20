@@ -1,0 +1,32 @@
+name: wrxn-ci
+
+# The single required status check the `wrxn-main-gate` branch ruleset gates on (ADR 0007, gate-06).
+# Adapted from the kernel template payload/.github/workflows/wrxn-ci.yml for the recon-wrxn sibling.
+# recon-wrxn is NOT a wrxn install (no wrxn.install.json) → the kernel-universal `wrxn ci` checks have no
+# managed set / wiki / synapse to verify and actively fail on the absent .synapse/manifest (verified), so
+# they are deliberately NOT invoked here. recon-wrxn's real gate is its OWN vitest suite — far stronger
+# than the `true`-stub backstop the universal checks exist for. No recon-specific GATE logic: same
+# PR-triggered, single-required-check shape; only the project build/test commands differ.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  wrxn-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: install dependencies
+        run: npm ci
+      - name: build (recon-wrxn is a TypeScript project)
+        run: npm run build
+      - name: test (the real gate — recon-wrxn's vitest suite)
+        run: npm test

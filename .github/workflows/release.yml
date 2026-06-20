@@ -1,32 +1,93 @@
 name: release
 
-# Publish to npm via OIDC trusted publishing when a release tag is pushed.
-# No NPM_TOKEN: the GitHub Actions OIDC identity authenticates against the
-# trusted-publisher config registered on npmjs.com for this package.
-# Requires: npm CLI >= 11.5.1 (node 24 + the explicit upgrade below) and the
-# id-token: write permission. Emits provenance (publishConfig.provenance).
+# Continuous delivery — type-gated release-on-merge (ADR 0007, gate-06). Adapted from the kernel template
+# .github/workflows/release.yml for recon-wrxn. Replaces recon's tag-`v*`-triggered publish: a merge to
+# `main` publishes (or not) by conventional-commit type. Runs AFTER CI by construction — the wrxn-main-gate
+# ruleset only lets a change reach `main` once the required `wrxn-ci` check is green.
+#
+# Type gate (reused from the published kernel CLI — `npx @gcunharodrigues/wrxn release-check`):
+#   feat → minor · fix/perf → patch · breaking (type! / BREAKING CHANGE:) → major  → PUBLISH
+#   chore/docs/refactor/test/style/ci/build → NO release.
+#
+# Version model: package.json.version is the source of truth (bump it IN THE PR). On merge: if the type
+# gate says release AND that version is not already on npm → build, publish via OIDC + provenance, push the
+# v<version> tag. The npm-already-published guard makes re-runs idempotent. recon versions are prereleases
+# (6.0.0-wrxn.N) → publish needs an explicit `--tag latest`.
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
 
 permissions:
   id-token: write
-  contents: read
+  contents: write
+
+# Serialize releases so two quick merges can't double-publish. Never cancel an in-flight publish.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  publish:
+  release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Do NOT persist GITHUB_TOKEN into git config — the npm build/test/publish steps run third-party
+          # lifecycle code and must not hold an ambient contents:write credential. The tag is pushed by an
+          # isolated final step that injects the token narrowly via env (gate-05 MED-1).
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
-      - run: npm install -g npm@latest
-      - run: npm ci
-      - run: npm run build
-      - run: npm test
-      # recon versions are semver prereleases (6.0.0-wrxn.N) → npm 11 requires an explicit dist-tag.
-      - run: npm publish --tag latest --access public
+          cache: npm
+
+      # Decide by conventional-commit type over the merged commit range, using the published kernel CLI.
+      # No npm ci needed: release-check uses only node stdlib + git, so a chore/docs merge stops here fast.
+      - name: decide release by conventional-commit type
+        id: decide
+        run: npx --yes @gcunharodrigues/wrxn release-check --range "${{ github.event.before }}..${{ github.sha }}"
+
+      - name: upgrade npm (OIDC trusted publishing needs npm >= 11.5.1)
+        if: steps.decide.outputs.release == 'true'
+        run: npm install -g npm@latest
+      - name: install dependencies
+        if: steps.decide.outputs.release == 'true'
+        run: npm ci
+      - name: build (recon-wrxn is a TypeScript project)
+        if: steps.decide.outputs.release == 'true'
+        run: npm run build
+      - name: test (pre-publish backstop)
+        if: steps.decide.outputs.release == 'true'
+        run: npm test
+
+      - name: publish to npm (OIDC + provenance) when release-worthy and unpublished
+        id: publish
+        if: steps.decide.outputs.release == 'true'
+        run: |
+          VER=$(node -p "require('./package.json').version")
+          PKG=$(node -p "require('./package.json').name")
+          PUBLISHED=$(npm view "$PKG@$VER" version 2>/dev/null || true)
+          if [ -n "$PUBLISHED" ]; then
+            echo "$PKG@$VER already published — skipping (idempotent re-run)"
+            exit 0
+          fi
+          echo "publishing $PKG@$VER (bump: ${{ steps.decide.outputs.bump }})"
+          # recon versions are prereleases (6.0.0-wrxn.N) → npm 11 requires an explicit dist-tag.
+          npm publish --provenance --access public --tag latest
+          echo "published=true" >> "$GITHUB_OUTPUT"
+
+      # The ONLY step that holds a write-capable token (gate-05 MED-1). checkout used
+      # persist-credentials: false, so no contents:write credential was ambient to the npm steps above;
+      # the token is injected narrowly here and used only to push the v<version> tag.
+      - name: push the release tag (isolated write step)
+        if: steps.publish.outputs.published == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          VER=$(node -p "require('./package.json').version")
+          git tag "v$VER"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${REPO}" "v$VER"
