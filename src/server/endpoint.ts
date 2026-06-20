@@ -46,12 +46,48 @@ export function writeEndpoint(reconDir: string, endpoint: ServeEndpoint): void {
   writeFileSync(endpointPath(reconDir), JSON.stringify(endpoint), { encoding: 'utf-8', mode: 0o600 });
 }
 
-/** Best-effort removal — a missing file or transient FS error never throws. */
+/**
+ * Pid-guarded removal: delete the discovery file ONLY when its on-disk `pid`
+ * matches THIS process — a file owned by another (possibly still-alive) serve is
+ * left intact. This is the fix for the lifecycle race (recon-wrxn#4): an exiting
+ * serve must not delete the file a co-located, still-serving sibling announced.
+ * Best-effort — a missing file or any FS/parse error never throws (shutdown
+ * cleanup must never crash serve).
+ */
 export function removeEndpoint(reconDir: string): void {
   try {
+    const raw = readFileSync(endpointPath(reconDir), 'utf-8');
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (parsed?.pid !== process.pid) return; // not ours → leave it for its owner
     rmSync(endpointPath(reconDir), { force: true });
   } catch {
-    // best-effort: shutdown cleanup must never crash serve.
+    // best-effort: absent / unreadable / malformed → nothing to clean up safely.
+  }
+}
+
+/**
+ * Claim the discovery file for `endpoint` ONLY when it is FREE — i.e. absent,
+ * malformed, the wrong shape, or owned by a pid that is no longer alive (readEndpoint
+ * returns null for all of these). A file that already points to ANY live serve —
+ * a sibling's or our own — is left untouched (no-op): the owner holds the door, so
+ * the heartbeat never rewrites a still-valid file (no churn). Reuses the 0600
+ * writeEndpoint primitive. The liveness probe is injectable so the cross-serve
+ * death-order scenario is deterministic (recon-wrxn#4). Best-effort — never throws.
+ */
+export function claimEndpoint(
+  reconDir: string,
+  endpoint: ServeEndpoint,
+  isAlive: (pid: number) => boolean = isProcessAlive,
+): void {
+  try {
+    const current = readEndpoint(reconDir, isAlive);
+    // Claim ONLY when the file is FREE (readEndpoint null ⇒ absent/malformed/dead-pid).
+    // ANY live owner — a sibling's OR our own — is left untouched, so the heartbeat
+    // never rewrites a still-valid file (steady state = zero write churn).
+    if (current !== null) return;
+    writeEndpoint(reconDir, endpoint);
+  } catch {
+    // best-effort: a claim failure must never block serve's stdio transport.
   }
 }
 
@@ -59,9 +95,13 @@ export function removeEndpoint(reconDir: string): void {
  * Resolve the live endpoint, or null ("not warm") when the file is absent,
  * malformed, the wrong shape, or its announced pid is NOT a live process. The
  * pid liveness probe is what makes a stale file (left by a SIGKILLed serve)
- * safe to ignore.
+ * safe to ignore. The probe is injectable (defaults to the real one) so callers
+ * and tests can drive the liveness decision deterministically (recon-wrxn#4).
  */
-export function readEndpoint(reconDir: string): ServeEndpoint | null {
+export function readEndpoint(
+  reconDir: string,
+  isAlive: (pid: number) => boolean = isProcessAlive,
+): ServeEndpoint | null {
   let raw: string;
   try {
     raw = readFileSync(endpointPath(reconDir), 'utf-8');
@@ -79,7 +119,7 @@ export function readEndpoint(reconDir: string): ServeEndpoint | null {
   if (typeof parsed !== 'object' || parsed === null) return null;
   const { pid, port } = parsed as Record<string, unknown>;
   if (typeof pid !== 'number' || typeof port !== 'number') return null; // wrong shape
-  if (!isProcessAlive(pid)) return null; // dead pid → not warm
+  if (!isAlive(pid)) return null; // dead pid → not warm
 
   return { pid, port };
 }
@@ -133,12 +173,16 @@ export async function maybeStartQueryDoor(opts: {
   }
   const port = addr.port;
 
-  writeEndpoint(opts.reconDir, { pid: process.pid, port });
+  // Cooperative claim, not an unconditional write: if a co-located sibling serve
+  // already announced a LIVE door, leave its file alone; only claim a free/stale
+  // one. The caller (serveCommand) adds a periodic claim heartbeat so a survivor
+  // re-claims when the announcer dies (recon-wrxn#4).
+  claimEndpoint(opts.reconDir, { pid: process.pid, port });
 
   return {
     port,
     close: () => {
-      removeEndpoint(opts.reconDir);
+      removeEndpoint(opts.reconDir); // pid-guarded: only removes if WE still own it
       try {
         server.close();
       } catch {
