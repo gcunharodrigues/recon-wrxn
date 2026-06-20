@@ -27,6 +27,7 @@ import {
   writeEndpoint,
   removeEndpoint,
   readEndpoint,
+  claimEndpoint,
   maybeStartQueryDoor,
   startQueryDoorSafe,
 } from '../../src/server/endpoint.js';
@@ -110,6 +111,105 @@ describe('discovery file helpers — the {pid,port} cross-repo contract (recon-b
   });
 });
 
+/**
+ * Lifecycle race self-heal (recon-wrxn#4). Multiple `serve` processes share ONE
+ * discovery file. The fix makes ownership cooperative WITHOUT changing the file
+ * path/name/{pid,port} shape: removeEndpoint is pid-guarded (only the owner deletes)
+ * and claimEndpoint claims the file only when it is free (absent / dead-pid owner).
+ * The liveness probe is injectable so the death-order scenario is deterministic —
+ * no real processes, no real timers.
+ */
+describe('cooperative ownership — pid-guarded remove + claim-if-free (recon-wrxn#4)', () => {
+  let dir: string;
+  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
+
+  const onDisk = (d: string) =>
+    JSON.parse(readFileSync(join(d, ENDPOINT_FILE), 'utf-8')) as { pid: number; port: number };
+
+  it('removeEndpoint leaves a file owned by a DIFFERENT pid untouched (AC-1)', () => {
+    dir = tmpReconDir();
+    const foreignPid = process.pid + 1;
+    writeEndpoint(dir, { pid: foreignPid, port: 51000 });
+    removeEndpoint(dir);
+    expect(existsSync(join(dir, ENDPOINT_FILE))).toBe(true);
+    expect(onDisk(dir)).toEqual({ pid: foreignPid, port: 51000 });
+  });
+
+  // claimEndpoint takes an injectable liveness probe so these are deterministic.
+  const allDead = (_pid: number) => false;
+  const allAlive = (_pid: number) => true;
+
+  it('claimEndpoint writes {pid,port} when the file is ABSENT (AC-2)', () => {
+    dir = tmpReconDir();
+    expect(existsSync(join(dir, ENDPOINT_FILE))).toBe(false);
+    claimEndpoint(dir, { pid: 4242, port: 51001 }, allAlive);
+    expect(onDisk(dir)).toEqual({ pid: 4242, port: 51001 });
+  });
+
+  it('claimEndpoint takes over a file whose owner pid is DEAD (AC-2)', () => {
+    dir = tmpReconDir();
+    writeEndpoint(dir, { pid: 9999, port: 51002 }); // a stale owner
+    claimEndpoint(dir, { pid: 4242, port: 51003 }, allDead); // probe: 9999 is dead
+    expect(onDisk(dir)).toEqual({ pid: 4242, port: 51003 });
+  });
+
+  it('claimEndpoint is a NO-OP when the file points to a LIVE different pid (AC-2)', () => {
+    dir = tmpReconDir();
+    writeEndpoint(dir, { pid: 8888, port: 51004 }); // a live foreign owner
+    claimEndpoint(dir, { pid: 4242, port: 51005 }, allAlive); // probe: 8888 is alive
+    expect(onDisk(dir)).toEqual({ pid: 8888, port: 51004 }); // untouched
+  });
+
+  it('claimEndpoint is a NO-OP when the file already points to THIS live pid — no churn (AC-2)', () => {
+    dir = tmpReconDir();
+    writeEndpoint(dir, { pid: 4242, port: 51006 });
+    // Same live pid, DIFFERENT port: a live owner's file (incl. our own) is left as-is,
+    // so the heartbeat does NOT rewrite the file every tick. The distinct port would only
+    // land on disk if claim wrongly overwrote a self-owned live file.
+    claimEndpoint(dir, { pid: 4242, port: 59999 }, allAlive);
+    expect(onDisk(dir)).toEqual({ pid: 4242, port: 51006 }); // unchanged → proven no-op
+  });
+
+  /**
+   * The full death-order race (recon-wrxn#4), driven purely through the public
+   * helpers with an injectable liveness probe + a manual "heartbeat tick" — no real
+   * processes, no real timers. Survivor B must end up owning a file pointing at its
+   * OWN live {pid,port}, even though announcer A dies and runs its remove last.
+   */
+  it('death-order resolves to the SURVIVOR via claim-heartbeat + pid-guarded remove (AC-3)', () => {
+    dir = tmpReconDir();
+    const A = { pid: 100, port: 50100 };
+    const B = { pid: 200, port: 50200 };
+    const liveset = new Set<number>([A.pid, B.pid]);
+    const alive = (pid: number) => liveset.has(pid);
+
+    // 1. Serve A starts, claims the free file → A owns it.
+    claimEndpoint(dir, A, alive);
+    expect(onDisk(dir)).toEqual(A);
+
+    // 2. Serve B starts; A is still live → B's startup claim is a no-op. A still owns.
+    claimEndpoint(dir, B, alive);
+    expect(onDisk(dir)).toEqual(A);
+
+    // 3. Serve A dies. With the OLD unconditional rmSync its exit deleted the file
+    //    out from under the still-serving B; with the pid-guard, A's death just frees
+    //    ownership. Simulate A's exit cleanup running (in A's process, pid===A.pid).
+    liveset.delete(A.pid);
+
+    // 4. B's heartbeat tick fires: the on-disk owner (A) is now dead → B re-claims.
+    claimEndpoint(dir, B, alive);
+    expect(onDisk(dir)).toEqual(B);
+
+    // 5. A's late remove (a stale closer firing after B re-claimed) sees a foreign
+    //    pid on disk and leaves B's file intact — readers still find the live door.
+    //    (removeEndpoint guards on process.pid; the on-disk pid is B's, not ours.)
+    removeEndpoint(dir);
+    expect(existsSync(join(dir, ENDPOINT_FILE))).toBe(true);
+    expect(onDisk(dir)).toEqual(B);
+    expect(readEndpoint(dir, alive)).toEqual(B); // resolves to the live survivor
+  });
+});
+
 describe('query-door orchestration gate (recon-brain-recall-02)', () => {
   let dir: string;
   let door: QueryDoorHandle | null = null;
@@ -136,7 +236,7 @@ describe('query-door orchestration gate (recon-brain-recall-02)', () => {
     expect((await res.json()).status).toBe('ok');
 
     // best-effort shutdown cleanup removes the discovery file
-    door.close();
+    door!.close();
     door = null;
     expect(existsSync(join(dir, ENDPOINT_FILE))).toBe(false);
   });

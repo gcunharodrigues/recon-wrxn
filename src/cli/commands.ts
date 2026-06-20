@@ -16,7 +16,7 @@ import { detectV5Index, migrateV5ToV6, detectV6Index } from '../storage/migrate.
 import { generateAgentsMd } from '../generators/agents-gen.js';
 import type { IndexMeta } from '../storage/types.js';
 import { startServer } from '../mcp/server.js';
-import { startQueryDoorSafe } from '../server/endpoint.js';
+import { startQueryDoorSafe, claimEndpoint } from '../server/endpoint.js';
 import { setFulltextRanker } from '../mcp/find.js';
 import { BM25Index } from '../search/bm25.js';
 import { VectorStore } from '../search/vector-store.js';
@@ -966,10 +966,24 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
       vectorStore: () => liveStore,
     });
     if (door) {
+      // Self-heal heartbeat (recon-wrxn#4): co-located serves share ONE discovery
+      // file. If the announcing serve dies, claimEndpoint sees the on-disk owner go
+      // un-alive and re-claims the file for THIS live door on the next tick — so the
+      // door never ends up serving while unannounced. unref()'d so it never keeps the
+      // process alive; cleared on shutdown alongside the door close.
+      const reconDir = join(projectRoot, '.recon-wrxn');
+      const heartbeat = setInterval(
+        () => claimEndpoint(reconDir, { pid: process.pid, port: door.port }),
+        10000,
+      );
+      heartbeat.unref();
       // Best-effort discovery-file cleanup on clean shutdown — SIGINT/SIGTERM/stdin-end
       // all funnel through startServer → process.exit(0) → 'exit'. A SIGKILL leaves a
       // stale file, but the reader's pid liveness probe treats it as "not warm".
-      process.on('exit', () => door.close());
+      process.on('exit', () => {
+        clearInterval(heartbeat);
+        door.close();
+      });
       console.error(`[recon] HTTP query door on 127.0.0.1:${door.port} (concurrent with stdio).`);
     }
 
