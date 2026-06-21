@@ -10,7 +10,7 @@ import { join, resolve, basename } from 'node:path';
 import { KnowledgeGraph } from '../graph/graph.js';
 import { buildCrossLanguageEdges, extractGoRoutes } from '../analyzers/cross-language.js';
 import type { APIRoute } from '../analyzers/cross-language.js';
-import { saveIndex, saveSearchIndex, saveEmbeddings, saveSearchText, loadIndex, loadEmbeddings, loadSearchText, loadAllRepos } from '../storage/store.js';
+import { saveIndex, saveSearchIndex, saveEmbeddings, saveSearchText, loadIndex, loadEmbeddings, loadSearchText, loadAllRepos, defaultRepoName } from '../storage/store.js';
 import { SqliteStore } from '../storage/sqlite.js';
 import { detectV5Index, migrateV5ToV6, detectV6Index } from '../storage/migrate.js';
 import { generateAgentsMd } from '../generators/agents-gen.js';
@@ -864,6 +864,11 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
 
   let graph: KnowledgeGraph;
   let vectorStore: VectorStore | null = null;
+  // The indexed short commit the freshness watermark ([#9]) compares against. It is
+  // projectRoot's own indexed commit: the loaded repo's in single-repo mode, the root
+  // repo's in merged mode. Passed to the serve transports, which compute the live dirty
+  // count from git per answer. Undefined → no footer (graceful).
+  let indexedCommit: string | undefined;
 
   if (repoName) {
     // Load specific repo
@@ -873,6 +878,7 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
       process.exit(1);
     }
     graph = stored.graph;
+    indexedCommit = stored.meta.gitCommit;
     vectorStore = await loadEmbeddings(projectRoot, repoName);
     console.error(`[recon] Loaded repo '${repoName}': ${graph.nodeCount} nodes, ${graph.relationshipCount} relationships`);
   } else {
@@ -880,6 +886,10 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
     const allRepos = await loadAllRepos(projectRoot);
     if (allRepos) {
       graph = allRepos.graph;
+      // The freshness base is projectRoot's OWN indexed commit — the root repo in the
+      // merged set (its name = basename(projectRoot)). Absent if the root isn't indexed.
+      const rootName = defaultRepoName(projectRoot);
+      indexedCommit = allRepos.repos.find(r => r.name === rootName)?.meta.gitCommit;
       const repoNames = allRepos.repos.map(r => r.name).join(', ');
       console.error(`[recon] Loaded ${allRepos.repos.length} repo(s) [${repoNames}]: ${graph.nodeCount} nodes, ${graph.relationshipCount} relationships`);
     } else {
@@ -889,6 +899,7 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
         process.exit(1);
       }
       graph = stored.graph;
+      indexedCommit = stored.meta.gitCommit;
       console.error(`[recon] Loaded index: ${graph.nodeCount} nodes, ${graph.relationshipCount} relationships`);
     }
     vectorStore = await loadEmbeddings(projectRoot, repoName);
@@ -1015,7 +1026,7 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
     // hot-swap above — not a stale by-value snapshot (recon-brain-recall-01).
     const { startHttpServer } = await import('../server/http.js');
     const port = options?.port || config.port;
-    await startHttpServer({ port, graph, projectRoot, vectorStore: () => liveStore });
+    await startHttpServer({ port, graph, projectRoot, vectorStore: () => liveStore, indexedCommit });
     // Keep process alive
     await new Promise(() => { });
   } else {
@@ -1032,6 +1043,7 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
       graph,
       projectRoot,
       vectorStore: () => liveStore,
+      indexedCommit,
     });
     if (door) {
       // Self-heal heartbeat (recon-wrxn#4): co-located serves share ONE discovery
@@ -1057,8 +1069,9 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
 
     console.error('[recon] MCP server starting on stdio...');
     // Pass a GETTER so each CallTool resolves the current store — this is what
-    // makes the mid-session hybrid swap visible without a restart.
-    await startServer(graph, projectRoot, () => liveStore);
+    // makes the mid-session hybrid swap visible without a restart. indexedCommit is
+    // the freshness watermark base ([#9]); each CallTool computes the live dirty count.
+    await startServer(graph, projectRoot, () => liveStore, indexedCommit);
   }
 }
 

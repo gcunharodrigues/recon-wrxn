@@ -151,6 +151,8 @@ export async function maybeStartQueryDoor(opts: {
   graph: KnowledgeGraph;
   projectRoot?: string;
   vectorStore?: VectorStoreSource;
+  /** The graph's indexed commit — the freshness watermark base ([#9]). */
+  indexedCommit?: string;
 }): Promise<QueryDoorHandle | null> {
   if (!opts.serveHttp) return null;
 
@@ -159,6 +161,7 @@ export async function maybeStartQueryDoor(opts: {
     graph: opts.graph,
     projectRoot: opts.projectRoot,
     vectorStore: opts.vectorStore,
+    indexedCommit: opts.indexedCommit,
   });
 
   const server = await new Promise<Server>((resolve, reject) => {
