@@ -19,6 +19,7 @@ import { KnowledgeGraph } from '../graph/graph.js';
 import type { VectorStore } from '../search/vector-store.js';
 import { RECON_TOOLS } from './tools.js';
 import { handleToolCall } from './handlers.js';
+import { computeFreshness } from './freshness.js';
 
 import { RECON_INSTRUCTIONS } from './instructions.js';
 import {
@@ -53,6 +54,7 @@ export function createServer(
   graph: KnowledgeGraph,
   projectRoot?: string,
   vectorStore?: VectorStoreSource,
+  indexedCommit?: string,
 ): Server {
   const server = new Server(
     { name: SERVER_NAME, version: VERSION },
@@ -123,12 +125,21 @@ export function createServer(
       // Resolve the store PER request so a mid-session live-swap is seen by the
       // very next CallTool — handleToolCall's signature is unchanged.
       const vs = typeof vectorStore === 'function' ? vectorStore() : vectorStore;
+      // Compute the freshness watermark at ANSWER TIME ([#9]): the live git dirty count
+      // against projectRoot with the indexed commit as the base, injected into the
+      // formatters. Skipped when projectRoot/commit are absent → no footer (back-compat).
+      // The single git read never re-indexes and does not block the answer.
+      const freshness =
+        projectRoot && indexedCommit
+          ? computeFreshness({ projectRoot, indexedCommit })
+          : undefined;
       const result = await handleToolCall(
         name,
         args as Record<string, unknown> | undefined,
         graph,
         projectRoot,
         vs,
+        freshness,
       );
       return {
         content: [{ type: 'text', text: result }],
@@ -170,8 +181,9 @@ export async function startServer(
   graph: KnowledgeGraph,
   projectRoot?: string,
   vectorStore?: VectorStoreSource,
+  indexedCommit?: string,
 ): Promise<void> {
-  const server = createServer(graph, projectRoot, vectorStore);
+  const server = createServer(graph, projectRoot, vectorStore, indexedCommit);
   const transport = new StdioServerTransport();
 
   let shuttingDown = false;
