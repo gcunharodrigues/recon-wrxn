@@ -132,6 +132,19 @@ export function seedDirtySet(
 }
 
 /**
+ * The SERVE per-answer watermark ([#11] D2). Combines a `baseline` (commit + comparability
+ * computed ONCE at serve startup — neither changes mid-session) with the watcher-maintained
+ * live set's CURRENT size, so the footer reflects the live served graph with no git shell-out
+ * per answer. When the baseline is already `unknown` (non-git / uncomparable / non-sha commit),
+ * the live set is meaningless, so serve keeps reporting `unknown` — degrading exactly as the
+ * cold path (computeFreshness) would, never crashing and never inventing a count.
+ */
+export function serveFreshness(baseline: Freshness, dirtySet: { size: number }): Freshness {
+  if (baseline.dirty === 'unknown') return baseline;
+  return { commit: baseline.commit, dirty: dirtySet.size };
+}
+
+/**
  * Render the one-line freshness footer: `indexed @ <commit>, N files dirty`.
  * Pure — it only formats an already-computed watermark.
  */
