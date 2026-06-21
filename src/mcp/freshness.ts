@@ -9,6 +9,8 @@
  * at answer time (so it works in serve and on the cold CLI path).
  */
 
+import { execFileSync } from 'node:child_process';
+
 /**
  * The freshness watermark injected into answer formatting. `commit` is the indexed
  * short commit (or `none` outside a git repo); `dirty` is the live count of files
@@ -17,6 +19,66 @@
 export interface Freshness {
   commit: string;
   dirty: number | 'unknown';
+}
+
+/** A non-git / uncomparable watermark: the graceful-degradation shape. */
+const UNKNOWN: Freshness = { commit: 'none', dirty: 'unknown' };
+
+/** Run a git command, returning trimmed stdout, or `null` if git fails/errors. */
+function git(cwd: string, args: string[]): string | null {
+  try {
+    return execFileSync('git', args, {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Compute the freshness watermark at ANSWER TIME. The dirty count is the union of:
+ *   - tracked files differing from the indexed commit (`git diff --name-only <commit>`:
+ *     covers committed-since-indexed, staged, AND unstaged modifications), and
+ *   - untracked new files (`git ls-files --others --exclude-standard`).
+ *
+ * This is a pure git read — it NEVER re-indexes or touches the graph, and a single
+ * synchronous shell-out does not block the answer. Degrades gracefully: a non-git
+ * project, an absent indexed commit, or an indexed commit not present in the repo all
+ * yield a `dirty: 'unknown'` watermark rather than crashing.
+ */
+export function computeFreshness(
+  opts: { projectRoot: string; indexedCommit: string | null | undefined },
+): Freshness {
+  const { projectRoot, indexedCommit } = opts;
+
+  // No comparison base → nothing to compare against; report unknown.
+  if (!indexedCommit) return UNKNOWN;
+
+  // Not a git work tree → graceful degradation.
+  if (git(projectRoot, ['rev-parse', '--is-inside-work-tree']) !== 'true') {
+    return UNKNOWN;
+  }
+
+  // The indexed commit must exist in this repo to compare against it.
+  if (git(projectRoot, ['cat-file', '-e', `${indexedCommit}^{commit}`]) === null) {
+    return { commit: indexedCommit, dirty: 'unknown' };
+  }
+
+  const changed = git(projectRoot, ['diff', '--name-only', indexedCommit]);
+  const untracked = git(projectRoot, ['ls-files', '--others', '--exclude-standard']);
+  if (changed === null || untracked === null) {
+    return { commit: indexedCommit, dirty: 'unknown' };
+  }
+
+  const files = new Set<string>();
+  for (const line of `${changed}\n${untracked}`.split('\n')) {
+    const f = line.trim();
+    if (f) files.add(f);
+  }
+
+  return { commit: indexedCommit, dirty: files.size };
 }
 
 /**
