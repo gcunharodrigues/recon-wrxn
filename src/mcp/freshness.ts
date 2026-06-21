@@ -53,8 +53,12 @@ export function computeFreshness(
 ): Freshness {
   const { projectRoot, indexedCommit } = opts;
 
-  // No comparison base → nothing to compare against; report unknown.
-  if (!indexedCommit) return UNKNOWN;
+  // No comparison base, or a value that is not a plain git sha → degrade immediately,
+  // BEFORE any git shell-out and before the value can reach the footer. `indexedCommit`
+  // is an unvalidated string from the persisted index; a crafted one (flag-leading like
+  // `--output=…`, space-smuggled, or multi-line) must never flow to a git arg nor be
+  // echoed into the markdown footer an LLM agent consumes. Real short/full SHAs are hex.
+  if (!indexedCommit || !/^[0-9a-fA-F]{4,40}$/.test(indexedCommit)) return UNKNOWN;
 
   // Not a git work tree → graceful degradation.
   if (git(projectRoot, ['rev-parse', '--is-inside-work-tree']) !== 'true') {
