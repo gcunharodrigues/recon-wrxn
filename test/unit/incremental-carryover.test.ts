@@ -22,7 +22,7 @@ const RECON_BIN = join(dirname(fileURLToPath(import.meta.url)), '../../bin/recon
 import { NodeType, RelationshipType, Language } from '../../src/graph/types.js';
 import type { Node, Relationship } from '../../src/graph/types.js';
 import { KnowledgeGraph } from '../../src/graph/graph.js';
-import { carryOverUnchangedTreeSitter } from '../../src/analyzers/tree-sitter/carryover.js';
+import { carryOverUnchangedTreeSitter, pruneDegenerateHashes } from '../../src/analyzers/tree-sitter/carryover.js';
 
 // ─── Helpers ────────────────────────────────────────────────────
 
@@ -169,6 +169,61 @@ describe('carryOverUnchangedTreeSitter', () => {
     carryOverUnchangedTreeSitter(fresh, prev, langs, [], { 'a.py': 'h' });
 
     expect(fresh.getNode('A')?.name).toBe('NEW');
+  });
+});
+
+// ─── Preventive carry-over: drop degenerate-file hashes (per-file) ──
+
+describe('pruneDegenerateHashes', () => {
+  const langs = [Language.Python, Language.JavaScript];
+
+  it('drops the hash of an unchanged code file whose previous graph holds zero symbols', () => {
+    // a.py was recorded as "seen" (hash present) but the previous graph has no symbols
+    // for it — a partially-degenerate carry-over. Its hash must be dropped so the next
+    // analyzer pass treats it as changed and RE-PARSES it instead of carrying it empty.
+    const prev = new KnowledgeGraph();
+    prev.addNode(mkNode({ id: 'py:func:b.py:foo:1', file: 'b.py' })); // b.py has symbols
+
+    const pruned = pruneDegenerateHashes({ 'a.py': 'h1', 'b.py': 'h2' }, prev, langs);
+
+    expect(pruned['a.py']).toBeUndefined(); // empty-in-prev → re-parse
+    expect(pruned['b.py']).toBe('h2'); // has symbols → still carryable
+  });
+
+  it('keeps every hash when the previous graph holds symbols for all code files', () => {
+    const prev = new KnowledgeGraph();
+    prev.addNode(mkNode({ id: 'py:func:a.py:foo:1', file: 'a.py' }));
+    prev.addNode(mkNode({ id: 'py:func:b.py:bar:1', file: 'b.py' }));
+
+    const pruned = pruneDegenerateHashes({ 'a.py': 'h1', 'b.py': 'h2' }, prev, langs);
+
+    expect(pruned).toEqual({ 'a.py': 'h1', 'b.py': 'h2' }); // healthy → unchanged
+  });
+
+  it('does NOT drop a non-code (markdown/prose) hash — only tree-sitter files are repaired', () => {
+    // Prose/markdown files are not tree-sitter symbols; their absence from the code graph
+    // is normal and must not force a re-parse on the tree-sitter walk.
+    const prev = new KnowledgeGraph();
+    prev.addNode(mkNode({ id: 'py:func:a.py:foo:1', file: 'a.py' }));
+
+    const pruned = pruneDegenerateHashes(
+      { 'a.py': 'h1', 'docs/readme.md': 'h2' },
+      prev,
+      langs,
+    );
+
+    expect(pruned['a.py']).toBe('h1');
+    expect(pruned['docs/readme.md']).toBe('h2'); // not a code file → untouched
+  });
+
+  it('does not mutate the input hashes object (returns a fresh map)', () => {
+    const prev = new KnowledgeGraph();
+    const input = { 'a.py': 'h1' };
+
+    const pruned = pruneDegenerateHashes(input, prev, langs);
+
+    expect(input).toEqual({ 'a.py': 'h1' }); // caller's object untouched
+    expect(pruned).not.toBe(input);
   });
 });
 
