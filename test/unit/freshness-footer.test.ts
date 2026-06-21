@@ -93,3 +93,65 @@ describe('[#9] freshness footer — recon_find absence × dirty/clean', () => {
     expect(result.toLowerCase()).not.toContain('verify before acting');
   });
 });
+
+describe('[#9] freshness footer — recon_impact presence vs absence', () => {
+  let graph: KnowledgeGraph;
+  beforeEach(() => { graph = buildGraph(); });
+
+  it('a PRESENCE impact (callers exist) with N > 0 carries the footer and NO warning', async () => {
+    // ValidateToken has an upstream caller (LoginHandler) → non-empty blast radius.
+    const result = await handleToolCall(
+      'recon_impact', { target: 'ValidateToken', direction: 'upstream' },
+      graph, undefined, undefined, DIRTY,
+    );
+    expect(result).toContain('LoginHandler');
+    expect(result).toContain('indexed @ abc1234, 3 files dirty');
+    expect(result.toLowerCase()).not.toContain('verify before acting');
+  });
+
+  it('an ABSENCE impact (no callers/dependents) with N > 0 carries the footer AND the warning', async () => {
+    // LoginHandler has NO upstream caller → empty blast radius (absence).
+    const result = await handleToolCall(
+      'recon_impact', { target: 'LoginHandler', direction: 'upstream' },
+      graph, undefined, undefined, DIRTY,
+    );
+    expect(result).toContain('0 total affected');
+    expect(result).toContain('indexed @ abc1234, 3 files dirty');
+    expect(result.toLowerCase()).toContain('verify before acting on this absence');
+  });
+
+  it('an ABSENCE impact with N == 0 carries the footer ONLY (no warning)', async () => {
+    const result = await handleToolCall(
+      'recon_impact', { target: 'LoginHandler', direction: 'upstream' },
+      graph, undefined, undefined, CLEAN,
+    );
+    expect(result).toContain('0 total affected');
+    expect(result).toContain('indexed @ abc1234, 0 files dirty');
+    expect(result.toLowerCase()).not.toContain('verify before acting');
+  });
+});
+
+describe('[#9] freshness footer — recon_explain is always footer-only (presence)', () => {
+  let graph: KnowledgeGraph;
+  beforeEach(() => { graph = buildGraph(); });
+
+  it('explain carries the footer and NEVER an absence warning, even when dirty', async () => {
+    const result = await handleToolCall(
+      'recon_explain', { name: 'LoginHandler' }, graph, undefined, undefined, DIRTY,
+    );
+    expect(result).toContain('# Context: LoginHandler');
+    expect(result).toContain('indexed @ abc1234, 3 files dirty');
+    expect(result.toLowerCase()).not.toContain('verify before acting');
+  });
+});
+
+describe('[#9] freshness footer — absent watermark leaves answers byte-identical (back-compat)', () => {
+  let graph: KnowledgeGraph;
+  beforeEach(() => { graph = buildGraph(); });
+
+  it('no footer is appended when no freshness is injected (existing callers/tests unchanged)', async () => {
+    const result = await handleToolCall('recon_find', { query: 'Login' }, graph);
+    expect(result).not.toContain('indexed @');
+    expect(result.toLowerCase()).not.toContain('verify before acting');
+  });
+});
