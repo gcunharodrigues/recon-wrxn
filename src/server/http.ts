@@ -23,6 +23,7 @@ import type { VectorStoreSource } from '../mcp/server.js';
 import { RECON_TOOLS } from '../mcp/tools.js';
 import { handleToolCall, findStructured, explainStructured, driftStructured } from '../mcp/handlers.js';
 import { computeFreshness } from '../mcp/freshness.js';
+import type { FreshnessProvider } from '../mcp/freshness.js';
 
 import {
   getResourceDefinitions,
@@ -61,13 +62,19 @@ export interface HttpServerOptions {
    * Absent → no footer (back-compat: tests, callers that don't wire it).
    */
   indexedCommit?: string;
+  /**
+   * The serve live-set freshness provider ([#11] D2). When present (serve runs a watcher),
+   * each answer's watermark is the live dirty-set count via this provider — no git per
+   * request. Absent → the cold-path computeFreshness from indexedCommit (back-compat).
+   */
+  freshnessProvider?: FreshnessProvider;
 }
 
 /**
  * Create the Express app (exported for testing without listen).
  */
 export function createApp(options: HttpServerOptions): express.Express {
-  const { graph, projectRoot, vectorStore, indexedCommit } = options;
+  const { graph, projectRoot, vectorStore, indexedCommit, freshnessProvider } = options;
   const app = express();
 
   app.use(cors({
@@ -125,12 +132,14 @@ export function createApp(options: HttpServerOptions): express.Express {
     // createApp (recon-brain-recall-01). Mirrors the stdio CallTool resolution.
     const vs = typeof vectorStore === 'function' ? vectorStore() : vectorStore;
 
-    // Compute the freshness watermark at ANSWER TIME ([#9]): the live dirty count from
-    // git against projectRoot, with the indexed commit as the comparison base. Injected
-    // into the formatters (never computed inside them). Skipped when projectRoot/commit
-    // are absent → no footer (back-compat). The single git read never re-indexes.
-    const freshness =
-      projectRoot && indexedCommit
+    // The freshness watermark for this answer. In serve with a live watcher ([#11] D2) the
+    // injected provider returns the live dirty-set count (no git per request). Otherwise
+    // ([#9] cold path) it is computed at ANSWER TIME from git against projectRoot with the
+    // indexed commit as the base. Injected into the formatters (never computed inside them).
+    // Skipped when projectRoot/commit are absent → no footer (back-compat). Never re-indexes.
+    const freshness = freshnessProvider
+      ? freshnessProvider()
+      : projectRoot && indexedCommit
         ? computeFreshness({ projectRoot, indexedCommit })
         : undefined;
 

@@ -21,6 +21,13 @@ export interface Freshness {
   dirty: number | 'unknown';
 }
 
+/**
+ * A serve-time freshness source resolved PER answer — the live-set provider serve wires
+ * ([#11] D2): `() => serveFreshness(baseline, liveDirtySet)`. When a transport is given none
+ * it falls back to the on-demand cold-path computeFreshness (e.g. `serve --no-watch`), unchanged.
+ */
+export type FreshnessProvider = () => Freshness;
+
 /** A non-git / uncomparable watermark: the graceful-degradation shape. */
 const UNKNOWN: Freshness = { commit: 'none', dirty: 'unknown' };
 

@@ -17,6 +17,8 @@ import { generateAgentsMd } from '../generators/agents-gen.js';
 import type { IndexMeta } from '../storage/types.js';
 import { startServer } from '../mcp/server.js';
 import { startQueryDoorSafe, claimEndpoint } from '../server/endpoint.js';
+import { computeFreshness, seedDirtySet, serveFreshness } from '../mcp/freshness.js';
+import type { FreshnessProvider } from '../mcp/freshness.js';
 import { setFulltextRanker } from '../mcp/find.js';
 import { BM25Index } from '../search/bm25.js';
 import { VectorStore } from '../search/vector-store.js';
@@ -869,6 +871,11 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
   // repo's in merged mode. Passed to the serve transports, which compute the live dirty
   // count from git per answer. Undefined → no footer (graceful).
   let indexedCommit: string | undefined;
+  // [#11] D2: when a live watcher runs, the serve transports read the live dirty-set count
+  // through this provider (no git per answer); the watcher maintains the set. Left undefined
+  // on the cold path (serve --no-watch, or no indexed commit) → transports fall back to the
+  // on-demand computeFreshness git count ([#9]), so that path is unchanged.
+  let freshnessProvider: FreshnessProvider | undefined;
 
   if (repoName) {
     // Load specific repo
@@ -941,6 +948,17 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
     for (const dir of projects) {
       watchDirs.push({ dir: resolve(dir), repoName: basename(resolve(dir)).toLowerCase() });
     }
+    // [#11] D2: seed the live dirty set from git so offline edits (made while serve was down)
+    // show in the count at startup, then let the watcher maintain it (add on observe, remove
+    // on re-parse). The serve footer reads the set's live size via freshnessProvider — near-
+    // zero when the watcher keeps up — instead of a git count per answer. Requires an indexed
+    // commit to compare against; absent → no footer (graceful, back-compat). The baseline
+    // (commit + comparability) is fixed once here; serveFreshness pairs it with the live size.
+    const dirtySet = indexedCommit ? seedDirtySet({ projectRoot, indexedCommit }) : undefined;
+    if (indexedCommit && dirtySet) {
+      const baseline = computeFreshness({ projectRoot, indexedCommit });
+      freshnessProvider = () => serveFreshness(baseline, dirtySet);
+    }
     // onChange: the live BM25 ranker is built ONCE above, so recon_find goes
     // stale after a watched `.md`/source edit until restart. Rebuild it from the
     // SAME in-place-mutated graph + the reloaded searchText snapshot whenever the
@@ -952,6 +970,7 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
         const st = await loadSearchText(projectRoot, repoName);
         setFulltextRanker(BM25Index.buildFromGraph(graph, st ?? undefined));
       },
+      dirtySet,
     );
     watcher.start();
   }
@@ -1026,7 +1045,7 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
     // hot-swap above — not a stale by-value snapshot (recon-brain-recall-01).
     const { startHttpServer } = await import('../server/http.js');
     const port = options?.port || config.port;
-    await startHttpServer({ port, graph, projectRoot, vectorStore: () => liveStore, indexedCommit });
+    await startHttpServer({ port, graph, projectRoot, vectorStore: () => liveStore, indexedCommit, freshnessProvider });
     // Keep process alive
     await new Promise(() => { });
   } else {
@@ -1044,6 +1063,7 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
       projectRoot,
       vectorStore: () => liveStore,
       indexedCommit,
+      freshnessProvider,
     });
     if (door) {
       // Self-heal heartbeat (recon-wrxn#4): co-located serves share ONE discovery
@@ -1070,8 +1090,10 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
     console.error('[recon] MCP server starting on stdio...');
     // Pass a GETTER so each CallTool resolves the current store — this is what
     // makes the mid-session hybrid swap visible without a restart. indexedCommit is
-    // the freshness watermark base ([#9]); each CallTool computes the live dirty count.
-    await startServer(graph, projectRoot, () => liveStore, indexedCommit);
+    // the freshness watermark base ([#9]); freshnessProvider, when set, makes each
+    // CallTool read the live watcher-maintained dirty-set count ([#11] D2) — else it
+    // falls back to the on-demand git count (serve --no-watch / no indexed commit).
+    await startServer(graph, projectRoot, () => liveStore, indexedCommit, freshnessProvider);
   }
 }
 
