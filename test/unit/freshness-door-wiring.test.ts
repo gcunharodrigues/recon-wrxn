@@ -16,6 +16,7 @@ import { KnowledgeGraph } from '../../src/graph/graph.js';
 import { NodeType, Language } from '../../src/graph/types.js';
 import type { Node } from '../../src/graph/types.js';
 import { createApp } from '../../src/server/http.js';
+import { computeFreshness, serveFreshness } from '../../src/mcp/freshness.js';
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf-8' }).trim();
@@ -97,5 +98,48 @@ describe('[#9] freshness wired through the HTTP door (answer-time compute)', () 
 
     expect(res.status).toBe(200);
     expect(res.body.result).not.toContain('indexed @');
+  });
+});
+
+describe('[#11] serve footer reads the LIVE dirty set via freshnessProvider (D2)', () => {
+  let dir: string;
+  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
+
+  it('the live-set count WINS over the on-demand git count (watcher absorbed the disk edits)', async () => {
+    dir = initRepo();
+    writeFileSync(join(dir, 'a.ts'), 'export const a = 1;\n');
+    git(dir, 'add', '-A');
+    git(dir, 'commit', '-q', '-m', 'init');
+    const indexed = git(dir, 'rev-parse', '--short', 'HEAD');
+
+    // The working tree is DIRTY on disk — the cold-path git count would be 2 ...
+    writeFileSync(join(dir, 'a.ts'), 'export const a = 2;\n');
+    writeFileSync(join(dir, 'b.ts'), 'export const b = 1;\n');
+
+    // ... but a live watcher has absorbed all but one file: the live set holds exactly ONE.
+    const live = new Set<string>(['src/pending.ts']);
+    const baseline = computeFreshness({ projectRoot: dir, indexedCommit: indexed });
+    const app = createApp({
+      port: 0, graph: graphWith('Widget'), projectRoot: dir, indexedCommit: indexed,
+      freshnessProvider: () => serveFreshness(baseline, live),
+    });
+    const res = await request(app).post('/api/tools/recon_find').send({ query: 'Widget' });
+
+    expect(res.status).toBe(200);
+    // 1 (the live served graph), NOT 2 (git on disk) — proves serve reads the live set.
+    expect(res.body.result).toContain(`indexed @ ${indexed}, 1 files dirty`);
+  });
+
+  it('a non-git baseline still degrades to unknown through the provider (no crash)', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'recon-d2-door-nongit-'));
+    const baseline = computeFreshness({ projectRoot: dir, indexedCommit: 'abc1234' }); // → unknown
+    const app = createApp({
+      port: 0, graph: graphWith('Widget'), projectRoot: dir, indexedCommit: 'abc1234',
+      freshnessProvider: () => serveFreshness(baseline, new Set(['x'])),
+    });
+    const res = await request(app).post('/api/tools/recon_find').send({ query: 'Widget' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.result).toContain('indexed @ none, unknown files dirty');
   });
 });
