@@ -102,7 +102,7 @@ export function appendFreshness(
 ): string {
   const footer = formatFreshnessFooter(f);
   const dirtyCount = typeof f.dirty === 'number' ? f.dirty : 0;
-  const lines = [text, '', `---`, footer];
+  const lines = [text, '', '---', footer];
   if (opts.absence && dirtyCount > 0) {
     lines.push(
       `\n> WARNING: the working tree has uncommitted/unindexed changes — verify before acting on this absence (the graph may be stale).`,
