@@ -31,6 +31,12 @@ function git(cwd: string, args: string[]): string | null {
       cwd,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      // Bound this answer-time shell-out: a hung/slow git (huge worktree, network FS,
+      // index.lock contention) must not block the answer — on timeout execFileSync throws
+      // and the catch below degrades to `null`/UNKNOWN. The explicit 16 MiB ceiling caps
+      // memory for the file-list output (vs. the 1 MB default) before it would ENOBUFS.
+      timeout: 2000,
+      maxBuffer: 16 * 1024 * 1024,
     }).trim();
   } catch {
     return null;
