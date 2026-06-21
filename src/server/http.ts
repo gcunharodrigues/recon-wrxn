@@ -22,6 +22,7 @@ import type { KnowledgeGraph } from '../graph/graph.js';
 import type { VectorStoreSource } from '../mcp/server.js';
 import { RECON_TOOLS } from '../mcp/tools.js';
 import { handleToolCall, findStructured, explainStructured, driftStructured } from '../mcp/handlers.js';
+import { computeFreshness } from '../mcp/freshness.js';
 
 import {
   getResourceDefinitions,
@@ -53,13 +54,20 @@ export interface HttpServerOptions {
    * the mid-session embedding hot-swap, mirroring the stdio path (recon-brain-recall-01).
    */
   vectorStore?: VectorStoreSource;
+  /**
+   * The graph's indexed short commit (from IndexMeta.gitCommit). The freshness
+   * watermark ([#9]) is computed PER REQUEST from git against projectRoot using this
+   * as the comparison base, so the footer reflects the live dirty count at answer time.
+   * Absent → no footer (back-compat: tests, callers that don't wire it).
+   */
+  indexedCommit?: string;
 }
 
 /**
  * Create the Express app (exported for testing without listen).
  */
 export function createApp(options: HttpServerOptions): express.Express {
-  const { graph, projectRoot, vectorStore } = options;
+  const { graph, projectRoot, vectorStore, indexedCommit } = options;
   const app = express();
 
   app.use(cors({
@@ -117,20 +125,30 @@ export function createApp(options: HttpServerOptions): express.Express {
     // createApp (recon-brain-recall-01). Mirrors the stdio CallTool resolution.
     const vs = typeof vectorStore === 'function' ? vectorStore() : vectorStore;
 
+    // Compute the freshness watermark at ANSWER TIME ([#9]): the live dirty count from
+    // git against projectRoot, with the indexed commit as the comparison base. Injected
+    // into the formatters (never computed inside them). Skipped when projectRoot/commit
+    // are absent → no footer (back-compat). The single git read never re-indexes.
+    const freshness =
+      projectRoot && indexedCommit
+        ? computeFreshness({ projectRoot, indexedCommit })
+        : undefined;
+
     try {
       // recon_find additionally surfaces the structured per-hit signal (cosine + arm
       // provenance) for node-stdlib consumers (the Recall hook); the markdown `result`
-      // stays byte-identical to the stdio output. Every other tool returns { result }.
+      // carries the freshness footer in parity with the stdio output. Every other tool
+      // returns { result }.
       if (name === 'recon_find') {
-        const { result, hits } = await findStructured(args, graph, vs);
+        const { result, hits } = await findStructured(args, graph, vs, freshness);
         res.json({ result, hits });
         return;
       }
       // recon_explain mirrors the find door: structured `neighbors` (the caller/callee/
       // import/… graph the `--neighbors` view reads) ride ALONGSIDE the markdown, which
-      // stays byte-identical to the stdio output (recon-brain-recall-review #5).
+      // carries the freshness footer in parity with the stdio output (recon-brain-recall-review #5).
       if (name === 'recon_explain') {
-        const { result, neighbors } = explainStructured(args, graph);
+        const { result, neighbors } = explainStructured(args, graph, freshness);
         res.json({ result, neighbors });
         return;
       }
