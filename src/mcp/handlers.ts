@@ -25,6 +25,8 @@ import { analyzeChanges, formatReview } from '../review/reviewer.js';
 import { detectProcesses } from '../graph/process.js';
 import { computeDrift, formatDrift } from './drift.js';
 import type { DriftReport } from './drift.js';
+import { appendFreshness } from './freshness.js';
+import type { Freshness } from './freshness.js';
 
 // ─── Helpers ───────────────────────────────────────────────────
 
@@ -212,6 +214,7 @@ export async function handleToolCall(
   graph: KnowledgeGraph,
   projectRoot?: string,
   vectorStore?: VectorStore | null,
+  freshness?: Freshness,
 ): Promise<string> {
   const a = args ?? {};
   // Check for empty graph (except recon_map which should show empty state)
@@ -224,13 +227,13 @@ export async function handleToolCall(
       return handleMap(a, graph, projectRoot);
 
     case 'recon_find':
-      return await handleFind(a, graph, vectorStore);
+      return await handleFind(a, graph, vectorStore, freshness);
 
     case 'recon_explain':
-      return handleExplain(a, graph);
+      return handleExplain(a, graph, freshness);
 
     case 'recon_impact':
-      return handleImpact(a, graph);
+      return handleImpact(a, graph, freshness);
 
     case 'recon_changes':
       return handleChanges(a, graph, projectRoot);
@@ -396,12 +399,18 @@ async function handleFind(
   args: Record<string, unknown>,
   graph: KnowledgeGraph,
   vectorStore?: VectorStore | null,
+  freshness?: Freshness,
 ): Promise<string> {
   const query = args?.query as string;
   if (!query) {
     return invalidParameter('query', '', ['<search term>']).toJSON();
   }
-  return formatFindResults(await findResults(args, graph, vectorStore));
+  const filtered = await findResults(args, graph, vectorStore);
+  const result = formatFindResults(filtered);
+  // Absence answer for find = no results; the footer (+ scoped warning when dirty)
+  // is appended only when a freshness watermark is injected (the injected-input seam).
+  if (!freshness) return result;
+  return appendFreshness(result, freshness, { absence: filtered.length === 0 });
 }
 
 /**
@@ -434,6 +443,7 @@ export async function findStructured(
 function handleExplain(
   args: Record<string, unknown>,
   graph: KnowledgeGraph,
+  freshness?: Freshness,
 ): string {
   const name = args?.name as string;
   const fileFilter = args?.file as string;
@@ -589,7 +599,11 @@ function handleExplain(
     // Skip flow detection on error
   }
 
-  return lines.join('\n');
+  const out = lines.join('\n');
+  // recon_explain is a PRESENCE answer (a resolved-symbol context lookup): footer
+  // only, never an absence warning. Appended only when a watermark is injected.
+  if (!freshness) return out;
+  return appendFreshness(out, freshness, { absence: false });
 }
 
 /** A structured recon_explain neighbor — what `wrxn brain query --neighbors` renders. */
@@ -678,6 +692,7 @@ export function explainStructured(
 function handleImpact(
   args: Record<string, unknown>,
   graph: KnowledgeGraph,
+  freshness?: Freshness,
 ): string {
   const target = args?.target as string;
   const direction = (args?.direction as string) || 'upstream';
@@ -825,7 +840,12 @@ function handleImpact(
     lines.push('');
   }
 
-  return lines.join('\n');
+  const out = lines.join('\n');
+  // Absence answer for impact = an empty blast radius (no non-test callers/dependents).
+  // The footer (+ scoped warning when dirty) is appended only when a watermark is
+  // injected (the injected-input seam).
+  if (!freshness) return out;
+  return appendFreshness(out, freshness, { absence: totalAffected === 0 });
 }
 
 // ─── recon_changes ────────────────────────────────────────────
