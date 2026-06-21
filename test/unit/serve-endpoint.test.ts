@@ -35,6 +35,7 @@ import type { QueryDoorHandle } from '../../src/server/endpoint.js';
 import { KnowledgeGraph } from '../../src/graph/graph.js';
 import { NodeType, Language } from '../../src/graph/types.js';
 import { loadConfig, initConfig } from '../../src/config/config.js';
+import { serveNeedsReindex } from '../../src/analyzers/tree-sitter/carryover.js';
 
 const ENDPOINT_FILE = 'serve-endpoint.json';
 
@@ -207,6 +208,55 @@ describe('cooperative ownership — pid-guarded remove + claim-if-free (recon-wr
     expect(existsSync(join(dir, ENDPOINT_FILE))).toBe(true);
     expect(onDisk(dir)).toEqual(B);
     expect(readEndpoint(dir, alive)).toEqual(B); // resolves to the live survivor
+  });
+});
+
+// ─── Serve-startup self-heal of a degenerate loaded index (C2, [#10]) ────────
+//
+// The serve-startup gate currently auto-indexes ONLY when no index exists or the
+// commit moved (stale). A LOADED index that is degenerate — zero tree-sitter
+// symbols while code files are present — passes the gate and is served dark,
+// which keeps an install empty across every restart. serveNeedsReindex extends
+// the startup decision to also fire on a degenerate loaded index, REUSING C1's
+// detection (shouldReactiveHeal) — no second detector. The decision is the seam:
+// the served-graph-has-symbols>0 outcome follows from indexCommand's own heal,
+// already proven end-to-end by the index self-heal suite ([#8]).
+
+describe('serve-startup self-heal: degenerate loaded index triggers reindex ([#10])', () => {
+  const TS = [Language.TypeScript];
+
+  /** A graph with `n` tree-sitter (TypeScript) symbols. */
+  function graphWithSymbols(n: number): KnowledgeGraph {
+    const g = new KnowledgeGraph();
+    for (let i = 0; i < n; i++) {
+      g.addNode({
+        id: `ts:func:fn${i}`, type: NodeType.Function, name: `fn${i}`, file: `src/mod${i}.ts`,
+        startLine: 1, endLine: 2, language: Language.TypeScript, package: 'src', exported: true,
+      });
+    }
+    return g;
+  }
+
+  /** fileHashes for `n` code files (the "code present" signal serve reads). */
+  function codeHashes(n: number): Record<string, string> {
+    const h: Record<string, string> = {};
+    for (let i = 0; i < n; i++) h[`src/mod${i}.ts`] = `hash${i}`;
+    return h;
+  }
+
+  it('a degenerate loaded index (zero symbols, code present, same commit) → reindex', () => {
+    // The exact sticky-dark state: hashes recorded for code files, but the loaded
+    // graph holds zero tree-sitter symbols, and the commit has NOT moved (so the
+    // pre-C2 staleness gate would have served it as-is).
+    expect(
+      serveNeedsReindex({
+        existingGraph: graphWithSymbols(0), // degenerate: zero symbols
+        fileHashes: codeHashes(5),          // but 5 code files are present
+        indexedCommit: 'abc123',
+        currentCommit: 'abc123',            // same commit → not "stale"
+        tsitterLangs: TS,
+      }),
+    ).toBe(true);
   });
 });
 
