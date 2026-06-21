@@ -30,7 +30,7 @@ import type { AnalyzerWarning } from '../analyzers/types.js';
 import { analyzeSource, findSourceFiles } from '../analyzers/source.js';
 import { resolveDocEdges } from '../analyzers/doc-edges.js';
 import { getAvailableLanguages } from '../analyzers/tree-sitter/index.js';
-import { carryOverUnchangedTreeSitter, pruneDegenerateHashes, shouldReactiveHeal } from '../analyzers/tree-sitter/carryover.js';
+import { carryOverUnchangedTreeSitter, pruneDegenerateHashes, shouldReactiveHeal, serveNeedsReindex } from '../analyzers/tree-sitter/carryover.js';
 import { detectCommunities } from '../graph/community.js';
 import { NodeType, RelationshipType } from '../graph/types.js';
 import { hashContent } from '../utils/hash.js';
@@ -808,10 +808,26 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
   if (!options?.noIndex) {
     const existing = await loadIndex(projectRoot, repoName);
     const git = getGitInfo(projectRoot);
-    const needsIndex = !existing || existing.meta.gitCommit !== git.commit;
+    // Reindex on startup when the index is absent, stale (commit moved), OR
+    // DEGENERATE — a loaded index with zero tree-sitter symbols while code files
+    // are present. The pre-C2 gate (!existing || commit mismatch) served a
+    // degenerate-but-current index dark, keeping an install empty across restarts.
+    // serveNeedsReindex REUSES C1's shouldReactiveHeal detector to catch it ([#10]).
+    const tsitterLangs = getAvailableLanguages();
+    const needsIndex = serveNeedsReindex({
+      existingGraph: existing?.graph ?? null,
+      fileHashes: existing?.meta.fileHashes ?? {},
+      indexedCommit: existing?.meta.gitCommit ?? null,
+      currentCommit: git.commit,
+      tsitterLangs,
+    });
 
     if (needsIndex) {
-      const reason = !existing ? 'no index found' : 'index is stale';
+      const reason = !existing
+        ? 'no index found'
+        : existing.meta.gitCommit !== git.commit
+          ? 'index is stale'
+          : 'loaded index is degenerate (zero code symbols, code present)';
       console.error(`[recon] Auto-indexing (${reason})...`);
       // embeddings:false — the serve auto-index must NOT regenerate embeddings.
       // Embedding generation re-embeds the WHOLE graph synchronously, blocking serve

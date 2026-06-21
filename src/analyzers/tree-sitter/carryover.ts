@@ -149,3 +149,77 @@ export function shouldReactiveHeal(args: {
     !args.alreadyHealed
   );
 }
+
+/**
+ * Serve-startup reindex decision (C2, [#10]): should `serve` rebuild the index
+ * before serving, given the index it just LOADED from disk?
+ *
+ * The pre-C2 gate reindexed only when no index existed or the commit moved — so a
+ * loaded index that is DEGENERATE (zero tree-sitter symbols while code files are
+ * present) but at the current commit passed the gate and was served dark, keeping
+ * an install empty across every restart. This extends the startup decision to also
+ * fire on that degenerate-loaded state, REUSING the C1 degenerate detector
+ * `shouldReactiveHeal` — there is NO second detection implementation here.
+ *
+ * Returns true (serve must reindex) when ANY holds:
+ *  - no index was loaded (absent) — preserves the prior "no index found" path;
+ *  - the loaded index's commit ≠ the current commit (stale) — prior "index is stale";
+ *  - the loaded index is degenerate per shouldReactiveHeal: zero tree-sitter symbols
+ *    in the loaded graph WHILE ≥1 supported code file is present in its fileHashes.
+ *
+ * The degenerate check maps the loaded index onto shouldReactiveHeal's inputs:
+ *  - finalSymbols  = tree-sitter symbols in the loaded graph (langSet filter);
+ *  - parsed        = 0 (serve has not re-walked anything yet at startup);
+ *  - skipped       = code files present in the loaded index (fileHashes, code-typed) —
+ *                    the "code present" signal, so a docs-only index is legitimately
+ *                    zero and never reindexes;
+ *  - incremental   = true (a loaded index IS the incremental baseline — the exact
+ *                    degenerate-incremental scenario the sticky-empty bug describes);
+ *  - alreadyHealed = false (serve startup is the first attempt this run).
+ *
+ * Pure — no filesystem, no git. The caller (serveCommand) adapts its loaded
+ * StoredIndex + git HEAD into these primitives and triggers a full reindex on true.
+ *
+ * @param existingGraph  the loaded index's graph, or null when no index exists.
+ * @param fileHashes     the loaded index's fileHashes (relativePath → hash); {} when none.
+ * @param indexedCommit  the commit the loaded index was built at, or null when none.
+ * @param currentCommit  the project's current git HEAD.
+ * @param tsitterLangs   active tree-sitter languages (from getAvailableLanguages()).
+ */
+export function serveNeedsReindex(args: {
+  existingGraph: KnowledgeGraph | null;
+  fileHashes: Record<string, string>;
+  indexedCommit: string | null;
+  currentCommit: string;
+  tsitterLangs: Language[];
+}): boolean {
+  // No index loaded → reindex (prior "no index found").
+  if (!args.existingGraph) return true;
+
+  // Commit moved → reindex (prior "index is stale").
+  if (args.indexedCommit !== args.currentCommit) return true;
+
+  // Otherwise: reindex ONLY if the loaded index is degenerate. Detection is C1's
+  // shouldReactiveHeal — the loaded graph's tree-sitter symbol count vs the code
+  // files the index recorded; a docs-only index (no code-typed hashes) yields
+  // skipped=0 and never heals.
+  const langSet = new Set<string>(args.tsitterLangs);
+
+  const loadedSymbols = [...args.existingGraph.nodes.values()].filter((n) =>
+    langSet.has(n.language),
+  ).length;
+
+  let codeFilesPresent = 0;
+  for (const file of Object.keys(args.fileHashes)) {
+    const lang = getLanguageForFile(file);
+    if (lang !== undefined && langSet.has(lang)) codeFilesPresent++;
+  }
+
+  return shouldReactiveHeal({
+    finalSymbols: loadedSymbols,
+    parsed: 0,
+    skipped: codeFilesPresent,
+    incremental: true,
+    alreadyHealed: false,
+  });
+}
