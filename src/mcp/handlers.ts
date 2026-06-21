@@ -425,6 +425,7 @@ export async function findStructured(
   args: Record<string, unknown> | undefined,
   graph: KnowledgeGraph,
   vectorStore?: VectorStore | null,
+  freshness?: Freshness,
 ): Promise<{ result: string; hits: FindHit[] }> {
   const a = args ?? {};
   if (graph.nodeCount === 0) {
@@ -435,7 +436,15 @@ export async function findStructured(
     return { result: invalidParameter('query', '', ['<search term>']).toJSON(), hits: [] };
   }
   const filtered = await findResults(a, graph, vectorStore);
-  return { result: formatFindResults(filtered), hits: toFindHits(filtered) };
+  // The door's markdown `result` stays in parity with the stdio path: the freshness
+  // footer (+ scoped warning on a dirty absence) rides `result` when a watermark is
+  // injected — the SAME footer handleFind appends — so both paths match. The structured
+  // `hits` sidecar is the pure projection, unaffected.
+  const md = formatFindResults(filtered);
+  const result = freshness
+    ? appendFreshness(md, freshness, { absence: filtered.length === 0 })
+    : md;
+  return { result, hits: toFindHits(filtered) };
 }
 
 // ─── recon_explain ────────────────────────────────────────────
@@ -674,12 +683,15 @@ function collectNeighbors(graph: KnowledgeGraph, node: Node): NeighborHit[] {
 export function explainStructured(
   args: Record<string, unknown> | undefined,
   graph: KnowledgeGraph,
+  freshness?: Freshness,
 ): { result: string; neighbors: NeighborHit[] } {
   const a = args ?? {};
   if (graph.nodeCount === 0) {
     return { result: emptyGraph().toJSON(), neighbors: [] };
   }
-  const result = handleExplain(a, graph);
+  // handleExplain appends the footer (presence-only) when a watermark is injected, so
+  // the door `result` stays in parity with the stdio path.
+  const result = handleExplain(a, graph, freshness);
   const name = a?.name as string;
   if (!name) return { result, neighbors: [] };
   const resolved = resolveSymbol(graph, name, a?.file as string);
