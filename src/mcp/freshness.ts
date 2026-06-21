@@ -44,42 +44,46 @@ function git(cwd: string, args: string[]): string | null {
 }
 
 /**
- * Compute the freshness watermark at ANSWER TIME. The dirty count is the union of:
+ * The git dirty computation shared by the cold-path COUNT (computeFreshness) and the serve
+ * live-set SEED (seedDirtySet, [#11] D2). The dirty set is the union of:
  *   - tracked files differing from the indexed commit (`git diff --name-only <commit>`:
  *     covers committed-since-indexed, staged, AND unstaged modifications), and
  *   - untracked new files (`git ls-files --others --exclude-standard`).
  *
- * This is a pure git read — it NEVER re-indexes or touches the graph, and a single
- * synchronous shell-out does not block the answer. Degrades gracefully: a non-git
- * project, an absent indexed commit, or an indexed commit not present in the repo all
- * yield a `dirty: 'unknown'` watermark rather than crashing.
+ * A pure git read — it NEVER re-indexes or touches the graph, and the synchronous shell-outs
+ * are bounded (see `git`). Returns a discriminated result so each caller maps the
+ * degeneracies to its own shape:
+ *   - `none`         — no/invalid indexed commit OR not a git work tree (→ commit `none`).
+ *   - `uncomparable` — the indexed commit is absent from the repo, or a git read failed.
+ *   - `ok`           — the comparable dirty file set (relative, git-root paths).
  */
-export function computeFreshness(
-  opts: { projectRoot: string; indexedCommit: string | null | undefined },
-): Freshness {
-  const { projectRoot, indexedCommit } = opts;
+type DirtyResult =
+  | { kind: 'none' }
+  | { kind: 'uncomparable' }
+  | { kind: 'ok'; files: Set<string> };
 
+function gitDirty(projectRoot: string, indexedCommit: string | null | undefined): DirtyResult {
   // No comparison base, or a value that is not a plain git sha → degrade immediately,
   // BEFORE any git shell-out and before the value can reach the footer. `indexedCommit`
   // is an unvalidated string from the persisted index; a crafted one (flag-leading like
   // `--output=…`, space-smuggled, or multi-line) must never flow to a git arg nor be
   // echoed into the markdown footer an LLM agent consumes. Real short/full SHAs are hex.
-  if (!indexedCommit || !/^[0-9a-fA-F]{4,40}$/.test(indexedCommit)) return UNKNOWN;
+  if (!indexedCommit || !/^[0-9a-fA-F]{4,40}$/.test(indexedCommit)) return { kind: 'none' };
 
   // Not a git work tree → graceful degradation.
   if (git(projectRoot, ['rev-parse', '--is-inside-work-tree']) !== 'true') {
-    return UNKNOWN;
+    return { kind: 'none' };
   }
 
   // The indexed commit must exist in this repo to compare against it.
   if (git(projectRoot, ['cat-file', '-e', `${indexedCommit}^{commit}`]) === null) {
-    return { commit: indexedCommit, dirty: 'unknown' };
+    return { kind: 'uncomparable' };
   }
 
   const changed = git(projectRoot, ['diff', '--name-only', indexedCommit]);
   const untracked = git(projectRoot, ['ls-files', '--others', '--exclude-standard']);
   if (changed === null || untracked === null) {
-    return { commit: indexedCommit, dirty: 'unknown' };
+    return { kind: 'uncomparable' };
   }
 
   const files = new Set<string>();
@@ -87,8 +91,44 @@ export function computeFreshness(
     const f = line.trim();
     if (f) files.add(f);
   }
+  return { kind: 'ok', files };
+}
 
-  return { commit: indexedCommit, dirty: files.size };
+/**
+ * Compute the freshness watermark at ANSWER TIME — the COLD CLI path (no live watcher).
+ * The dirty count is the size of the git dirty set computed on demand. Degrades gracefully:
+ * a non-git project, an absent indexed commit, or an indexed commit not present in the repo
+ * all yield a `dirty: 'unknown'` watermark rather than crashing. A single synchronous git
+ * read never re-indexes and does not block the answer. (In serve the watcher maintains a live
+ * set instead, seeded from this same computation — see seedDirtySet / serveFreshness.)
+ */
+export function computeFreshness(
+  opts: { projectRoot: string; indexedCommit: string | null | undefined },
+): Freshness {
+  const { projectRoot, indexedCommit } = opts;
+  const r = gitDirty(projectRoot, indexedCommit);
+  // `none` → the fully-unknown watermark; for `uncomparable`/`ok` the commit is a validated
+  // sha (gitDirty returns `none` for every falsy/non-sha case), so `indexedCommit!` is real.
+  if (r.kind === 'none') return UNKNOWN;
+  if (r.kind === 'uncomparable') return { commit: indexedCommit!, dirty: 'unknown' };
+  return { commit: indexedCommit!, dirty: r.files.size };
+}
+
+/**
+ * Seed the SERVE live dirty set at startup ([#11] D2). REUSES the exact git computation
+ * D1's computeFreshness performs (gitDirty), so an offline change made while serve was down
+ * appears in the count before any new edit. Returns RELATIVE (git-root) paths, matching the
+ * watcher's per-file relPath in the single-repo serve case. Any non-git/uncomparable
+ * condition seeds an EMPTY set — the watcher still maintains it live from there, and
+ * serveFreshness keeps the footer honest by degrading to `unknown` exactly when
+ * computeFreshness would. The watcher then ADDS a file on its change event and REMOVES it
+ * once that file is re-parsed, so the served count tracks the live graph, not the persisted index.
+ */
+export function seedDirtySet(
+  opts: { projectRoot: string; indexedCommit: string | null | undefined },
+): Set<string> {
+  const r = gitDirty(opts.projectRoot, opts.indexedCommit);
+  return r.kind === 'ok' ? r.files : new Set();
 }
 
 /**
