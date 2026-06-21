@@ -14,6 +14,7 @@
 
 import type { Language } from '../../graph/types.js';
 import type { KnowledgeGraph } from '../../graph/graph.js';
+import { getLanguageForFile } from './parser.js';
 
 /**
  * Merge UNCHANGED tree-sitter symbols (and their relationships) from a previous
@@ -64,4 +65,51 @@ export function carryOverUnchangedTreeSitter(
       graph.addRelationship(rel);
     }
   }
+}
+
+/**
+ * Preventive carry-over correctness: drop the hashes of UNCHANGED code files that
+ * the previous graph holds NO tree-sitter symbols for, so the next analyzer pass
+ * re-parses them instead of carrying them empty.
+ *
+ * The unconditional carry-over above (and the analyzer's hash-match skip that feeds
+ * it) assumes "unchanged file ⇒ its previous symbols are valid". That breaks under
+ * PARTIAL degradation: a file recorded as seen (hash present) whose previous symbols
+ * were lost leaves a per-file hole the total-zero reactive check cannot see — the
+ * file is skipped every run and never repopulates. This tightens the rule to per-file:
+ * a code-file hash survives only if the previous graph actually holds ≥1 tree-sitter
+ * symbol for that file; otherwise it is removed from the incremental baseline so the
+ * file is treated as changed and re-parsed.
+ *
+ * Only tree-sitter-language files are considered — a prose/markdown hash has no code
+ * symbols by definition and must not be forced through the tree-sitter walk. Returns
+ * a fresh map; the caller's object is never mutated.
+ *
+ * @param previousHashes  fileHashes of the previous index (the incremental baseline).
+ * @param previousGraph   the previous index's graph.
+ * @param tsitterLangs    active tree-sitter languages (from getAvailableLanguages()).
+ */
+export function pruneDegenerateHashes(
+  previousHashes: Record<string, string>,
+  previousGraph: KnowledgeGraph,
+  tsitterLangs: Language[],
+): Record<string, string> {
+  const langSet = new Set<string>(tsitterLangs);
+
+  // Files the previous graph has at least one tree-sitter symbol for.
+  const filesWithSymbols = new Set<string>();
+  for (const node of previousGraph.nodes.values()) {
+    if (langSet.has(node.language)) filesWithSymbols.add(node.file);
+  }
+
+  const pruned: Record<string, string> = {};
+  for (const [file, hash] of Object.entries(previousHashes)) {
+    const lang = getLanguageForFile(file);
+    const isCodeFile = lang !== undefined && langSet.has(lang);
+    // Drop only a CODE file that the previous graph has no symbols for; keep prose
+    // hashes and any code file that is genuinely populated.
+    if (isCodeFile && !filesWithSymbols.has(file)) continue;
+    pruned[file] = hash;
+  }
+  return pruned;
 }
