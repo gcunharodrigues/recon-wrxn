@@ -113,3 +113,39 @@ export function pruneDegenerateHashes(
   }
   return pruned;
 }
+
+/**
+ * Reactive recovery decision (mechanism 1): should this build re-run once with full
+ * (force) semantics to escape a degenerate code graph?
+ *
+ * Computed purely from the existing index stats and the final graph symbol count —
+ * NO new file walk. Heal exactly when all hold:
+ *  - the final graph has ZERO tree-sitter code symbols (the degenerate outcome);
+ *  - at least one supported code file was discovered (parsed + skipped ≥ 1) — a
+ *    docs-only repo is legitimately zero and must never heal;
+ *  - the run was incremental — a forced full pass is already the recovery path, so a
+ *    force run that lands at zero is a genuine grammar/parse failure, not the bug;
+ *  - it has not already healed this run — recover at most once; a still-zero forced
+ *    pass is accepted (with a warning) rather than looped.
+ *
+ * @param finalSymbols    tree-sitter code symbols in the final (post-carry-over) graph.
+ * @param parsed          files freshly (re)analyzed this run (stats.files).
+ * @param skipped         unchanged files skipped this run (stats.skipped).
+ * @param incremental     true when the run used a previous index (not --force).
+ * @param alreadyHealed   true once a heal has been attempted in this run.
+ */
+export function shouldReactiveHeal(args: {
+  finalSymbols: number;
+  parsed: number;
+  skipped: number;
+  incremental: boolean;
+  alreadyHealed: boolean;
+}): boolean {
+  const codeFilesDiscovered = args.parsed + args.skipped;
+  return (
+    args.finalSymbols === 0 &&
+    codeFilesDiscovered >= 1 &&
+    args.incremental &&
+    !args.alreadyHealed
+  );
+}

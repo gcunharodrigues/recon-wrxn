@@ -30,7 +30,7 @@ import type { AnalyzerWarning } from '../analyzers/types.js';
 import { analyzeSource, findSourceFiles } from '../analyzers/source.js';
 import { resolveDocEdges } from '../analyzers/doc-edges.js';
 import { getAvailableLanguages } from '../analyzers/tree-sitter/index.js';
-import { carryOverUnchangedTreeSitter } from '../analyzers/tree-sitter/carryover.js';
+import { carryOverUnchangedTreeSitter, pruneDegenerateHashes, shouldReactiveHeal } from '../analyzers/tree-sitter/carryover.js';
 import { detectCommunities } from '../graph/community.js';
 import { NodeType, RelationshipType } from '../graph/types.js';
 import { hashContent } from '../utils/hash.js';
@@ -413,7 +413,7 @@ export async function embedGraph(
   return null;
 }
 
-export async function indexCommand(options: { force?: boolean; repo?: string; embeddings?: boolean; embeddingsOnly?: boolean }): Promise<void> {
+export async function indexCommand(options: { force?: boolean; repo?: string; embeddings?: boolean; embeddingsOnly?: boolean; _healed?: boolean }): Promise<void> {
   const startTime = performance.now();
   const projectRoot = findProjectRoot();
   const repoName = options.repo;
@@ -432,7 +432,6 @@ export async function indexCommand(options: { force?: boolean; repo?: string; em
 
   // Load previous index for incremental comparison
   const previousIndex = options.force ? null : await loadIndex(projectRoot, repoName);
-  const previousHashes = previousIndex?.meta.fileHashes;
 
   if (previousIndex && !options.force) {
     console.log('[recon] Previous index found ??using incremental mode.');
@@ -445,7 +444,19 @@ export async function indexCommand(options: { force?: boolean; repo?: string; em
   const tsitterLangs = getAvailableLanguages();
   let tsitterSymbols = 0;
   let tsitterFiles = 0;
+  let tsitterSkipped = 0;
   let tsitterHashes: Record<string, string> = {};
+
+  // Preventive carry-over correctness (C1 mechanism 2): an unchanged code file whose
+  // PREVIOUS graph holds zero tree-sitter symbols would be skipped (hash match) and then
+  // carried empty forever — a per-file degenerate hole the total-zero reactive check can't
+  // see. Drop those files' hashes from the incremental baseline so the analyzer re-parses
+  // them instead of skipping. Computed from the previous graph + hashes — no new walk.
+  const previousHashes =
+    previousIndex && tsitterLangs.length > 0
+      ? pruneDegenerateHashes(previousIndex.meta.fileHashes ?? {}, previousIndex.graph, tsitterLangs)
+      : previousIndex?.meta.fileHashes;
+
   if (tsitterLangs.length > 0) {
     console.log(`[recon] Analyzing with tree-sitter (${tsitterLangs.join(', ')})...`);
     const tsitterResult = await analyzeTreeSitterParallel(projectRoot, previousHashes, config.ignore, config.maxFileSize);
@@ -459,6 +470,7 @@ export async function indexCommand(options: { force?: boolean; repo?: string; em
 
     tsitterSymbols = tsitterResult.stats.symbols;
     tsitterFiles = tsitterResult.stats.files;
+    tsitterSkipped = tsitterResult.stats.skipped;
     tsitterHashes = tsitterResult.fileHashes;
 
     if (tsitterResult.stats.files > 0) {
@@ -493,6 +505,46 @@ export async function indexCommand(options: { force?: boolean; repo?: string; em
         tsitterHashes,
       );
     }
+  }
+
+  // Reactive recovery (C1 mechanism 1): if this incremental build ended with a code
+  // graph that is empty of tree-sitter symbols WHILE supported code files exist, the
+  // index has gone degenerate — re-run ONCE with full (force) semantics, the proven
+  // recovery path, instead of persisting an empty graph. Detection is from the index
+  // stats (parsed + skipped) and the final graph symbol count — no new walk. Heal at
+  // most once per run; a forced pass that is still zero with code present is a genuine
+  // grammar/parse failure (not the sticky bug) → warn and accept, never loop.
+  const langSet = new Set<string>(tsitterLangs);
+  const finalTreeSitterSymbols = [...graph.nodes.values()].filter((n) =>
+    langSet.has(n.language),
+  ).length;
+
+  if (
+    shouldReactiveHeal({
+      finalSymbols: finalTreeSitterSymbols,
+      parsed: tsitterFiles,
+      skipped: tsitterSkipped,
+      incremental: Boolean(previousIndex) && !options.force,
+      alreadyHealed: Boolean(options._healed),
+    })
+  ) {
+    console.log(
+      '[recon] self-heal: code files present but graph has zero tree-sitter symbols ' +
+        '— re-indexing with --force.',
+    );
+    await indexCommand({ ...options, force: true, _healed: true });
+    return;
+  }
+
+  if (options._healed && finalTreeSitterSymbols === 0 && tsitterFiles + tsitterSkipped >= 1) {
+    // Forced full pass still empty with code present: a genuine grammar/parse failure,
+    // not the sticky-empty incremental bug. Accept (do NOT loop) and surface the reason.
+    // Logged on stdout to share the self-heal narrative channel — this is an accepted
+    // outcome the operator should see, not a process error.
+    console.log(
+      '[recon] warning: forced re-index still produced zero tree-sitter symbols with ' +
+        'code files present — accepting as a genuine grammar/parse failure (not retrying).',
+    );
   }
 
   // Cross-language analysis: link TS API calls to Go handlers
