@@ -22,7 +22,11 @@ const RECON_BIN = join(dirname(fileURLToPath(import.meta.url)), '../../bin/recon
 import { NodeType, RelationshipType, Language } from '../../src/graph/types.js';
 import type { Node, Relationship } from '../../src/graph/types.js';
 import { KnowledgeGraph } from '../../src/graph/graph.js';
-import { carryOverUnchangedTreeSitter, pruneDegenerateHashes } from '../../src/analyzers/tree-sitter/carryover.js';
+import {
+  carryOverUnchangedTreeSitter,
+  pruneDegenerateHashes,
+  shouldReactiveHeal,
+} from '../../src/analyzers/tree-sitter/carryover.js';
 
 // ─── Helpers ────────────────────────────────────────────────────
 
@@ -224,6 +228,74 @@ describe('pruneDegenerateHashes', () => {
 
     expect(input).toEqual({ 'a.py': 'h1' }); // caller's object untouched
     expect(pruned).not.toBe(input);
+  });
+});
+
+// ─── Reactive recovery: the heal decision (pure, no walk) ───────────
+
+describe('shouldReactiveHeal', () => {
+  // Detection from existing index stats (parsed + skipped) + final graph symbol count.
+  // codeFilesDiscovered = parsed + skipped; heal only when the final graph is empty of
+  // code symbols AND code files exist AND the run was incremental AND it has not healed yet.
+
+  it('heals when the run is incremental, code files exist, and the final graph has zero symbols', () => {
+    expect(
+      shouldReactiveHeal({
+        finalSymbols: 0,
+        parsed: 0,
+        skipped: 5,
+        incremental: true,
+        alreadyHealed: false,
+      }),
+    ).toBe(true);
+  });
+
+  it('does NOT heal when the final graph already has code symbols', () => {
+    expect(
+      shouldReactiveHeal({
+        finalSymbols: 7,
+        parsed: 2,
+        skipped: 3,
+        incremental: true,
+        alreadyHealed: false,
+      }),
+    ).toBe(false);
+  });
+
+  it('does NOT heal a docs-only repo (zero discovered code files)', () => {
+    expect(
+      shouldReactiveHeal({
+        finalSymbols: 0,
+        parsed: 0,
+        skipped: 0,
+        incremental: true,
+        alreadyHealed: false,
+      }),
+    ).toBe(false);
+  });
+
+  it('does NOT heal a forced (non-incremental) run — force is already the full path', () => {
+    expect(
+      shouldReactiveHeal({
+        finalSymbols: 0,
+        parsed: 0,
+        skipped: 5,
+        incremental: false,
+        alreadyHealed: false,
+      }),
+    ).toBe(false);
+  });
+
+  it('does NOT heal twice — once a run has healed, a still-zero result is accepted', () => {
+    expect(
+      shouldReactiveHeal({
+        finalSymbols: 0,
+        parsed: 5,
+        skipped: 0,
+        incremental: true,
+        alreadyHealed: true,
+      }),
+    ).toBe(false);
   });
 });
 
