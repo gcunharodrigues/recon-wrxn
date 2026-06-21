@@ -70,3 +70,26 @@ describe('[#9] freshness footer — recon_find presence', () => {
     expect(result).toContain('LoginHandler');
   });
 });
+
+describe('[#9] freshness footer — recon_find absence × dirty/clean', () => {
+  let graph: KnowledgeGraph;
+  beforeEach(() => { graph = buildGraph(); });
+
+  it('an ABSENCE answer (no results) with N > 0 carries the footer AND the verify-before-acting warning', async () => {
+    const result = await handleToolCall(
+      'recon_find', { query: 'NoSuchSymbolXyz' }, graph, undefined, undefined, DIRTY,
+    );
+    expect(result).toContain('No results found.');
+    expect(result).toContain('indexed @ abc1234, 3 files dirty');
+    expect(result.toLowerCase()).toContain('verify before acting on this absence');
+  });
+
+  it('an ABSENCE answer with N == 0 carries the footer ONLY (no warning)', async () => {
+    const result = await handleToolCall(
+      'recon_find', { query: 'NoSuchSymbolXyz' }, graph, undefined, undefined, CLEAN,
+    );
+    expect(result).toContain('No results found.');
+    expect(result).toContain('indexed @ abc1234, 0 files dirty');
+    expect(result.toLowerCase()).not.toContain('verify before acting');
+  });
+});
