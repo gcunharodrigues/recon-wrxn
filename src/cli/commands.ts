@@ -10,13 +10,15 @@ import { join, resolve, basename } from 'node:path';
 import { KnowledgeGraph } from '../graph/graph.js';
 import { buildCrossLanguageEdges, extractGoRoutes } from '../analyzers/cross-language.js';
 import type { APIRoute } from '../analyzers/cross-language.js';
-import { saveIndex, saveSearchIndex, saveEmbeddings, saveSearchText, loadIndex, loadEmbeddings, loadSearchText, loadAllRepos } from '../storage/store.js';
+import { saveIndex, saveSearchIndex, saveEmbeddings, saveSearchText, loadIndex, loadEmbeddings, loadSearchText, loadAllRepos, defaultRepoName } from '../storage/store.js';
 import { SqliteStore } from '../storage/sqlite.js';
 import { detectV5Index, migrateV5ToV6, detectV6Index } from '../storage/migrate.js';
 import { generateAgentsMd } from '../generators/agents-gen.js';
 import type { IndexMeta } from '../storage/types.js';
 import { startServer } from '../mcp/server.js';
 import { startQueryDoorSafe, claimEndpoint } from '../server/endpoint.js';
+import { computeFreshness, seedDirtySet, serveFreshness } from '../mcp/freshness.js';
+import type { FreshnessProvider } from '../mcp/freshness.js';
 import { setFulltextRanker } from '../mcp/find.js';
 import { BM25Index } from '../search/bm25.js';
 import { VectorStore } from '../search/vector-store.js';
@@ -30,7 +32,7 @@ import type { AnalyzerWarning } from '../analyzers/types.js';
 import { analyzeSource, findSourceFiles } from '../analyzers/source.js';
 import { resolveDocEdges } from '../analyzers/doc-edges.js';
 import { getAvailableLanguages } from '../analyzers/tree-sitter/index.js';
-import { carryOverUnchangedTreeSitter } from '../analyzers/tree-sitter/carryover.js';
+import { carryOverUnchangedTreeSitter, pruneDegenerateHashes, shouldReactiveHeal, serveNeedsReindex } from '../analyzers/tree-sitter/carryover.js';
 import { detectCommunities } from '../graph/community.js';
 import { NodeType, RelationshipType } from '../graph/types.js';
 import { hashContent } from '../utils/hash.js';
@@ -413,7 +415,7 @@ export async function embedGraph(
   return null;
 }
 
-export async function indexCommand(options: { force?: boolean; repo?: string; embeddings?: boolean; embeddingsOnly?: boolean }): Promise<void> {
+export async function indexCommand(options: { force?: boolean; repo?: string; embeddings?: boolean; embeddingsOnly?: boolean; _healed?: boolean }): Promise<void> {
   const startTime = performance.now();
   const projectRoot = findProjectRoot();
   const repoName = options.repo;
@@ -432,7 +434,6 @@ export async function indexCommand(options: { force?: boolean; repo?: string; em
 
   // Load previous index for incremental comparison
   const previousIndex = options.force ? null : await loadIndex(projectRoot, repoName);
-  const previousHashes = previousIndex?.meta.fileHashes;
 
   if (previousIndex && !options.force) {
     console.log('[recon] Previous index found ??using incremental mode.');
@@ -445,7 +446,19 @@ export async function indexCommand(options: { force?: boolean; repo?: string; em
   const tsitterLangs = getAvailableLanguages();
   let tsitterSymbols = 0;
   let tsitterFiles = 0;
+  let tsitterSkipped = 0;
   let tsitterHashes: Record<string, string> = {};
+
+  // Preventive carry-over correctness (C1 mechanism 2): an unchanged code file whose
+  // PREVIOUS graph holds zero tree-sitter symbols would be skipped (hash match) and then
+  // carried empty forever — a per-file degenerate hole the total-zero reactive check can't
+  // see. Drop those files' hashes from the incremental baseline so the analyzer re-parses
+  // them instead of skipping. Computed from the previous graph + hashes — no new walk.
+  const previousHashes =
+    previousIndex && tsitterLangs.length > 0
+      ? pruneDegenerateHashes(previousIndex.meta.fileHashes ?? {}, previousIndex.graph, tsitterLangs)
+      : previousIndex?.meta.fileHashes;
+
   if (tsitterLangs.length > 0) {
     console.log(`[recon] Analyzing with tree-sitter (${tsitterLangs.join(', ')})...`);
     const tsitterResult = await analyzeTreeSitterParallel(projectRoot, previousHashes, config.ignore, config.maxFileSize);
@@ -459,6 +472,7 @@ export async function indexCommand(options: { force?: boolean; repo?: string; em
 
     tsitterSymbols = tsitterResult.stats.symbols;
     tsitterFiles = tsitterResult.stats.files;
+    tsitterSkipped = tsitterResult.stats.skipped;
     tsitterHashes = tsitterResult.fileHashes;
 
     if (tsitterResult.stats.files > 0) {
@@ -493,6 +507,46 @@ export async function indexCommand(options: { force?: boolean; repo?: string; em
         tsitterHashes,
       );
     }
+  }
+
+  // Reactive recovery (C1 mechanism 1): if this incremental build ended with a code
+  // graph that is empty of tree-sitter symbols WHILE supported code files exist, the
+  // index has gone degenerate — re-run ONCE with full (force) semantics, the proven
+  // recovery path, instead of persisting an empty graph. Detection is from the index
+  // stats (parsed + skipped) and the final graph symbol count — no new walk. Heal at
+  // most once per run; a forced pass that is still zero with code present is a genuine
+  // grammar/parse failure (not the sticky bug) → warn and accept, never loop.
+  const langSet = new Set<string>(tsitterLangs);
+  const finalTreeSitterSymbols = [...graph.nodes.values()].filter((n) =>
+    langSet.has(n.language),
+  ).length;
+
+  if (
+    shouldReactiveHeal({
+      finalSymbols: finalTreeSitterSymbols,
+      parsed: tsitterFiles,
+      skipped: tsitterSkipped,
+      incremental: Boolean(previousIndex) && !options.force,
+      alreadyHealed: Boolean(options._healed),
+    })
+  ) {
+    console.log(
+      '[recon] self-heal: code files present but graph has zero tree-sitter symbols ' +
+        '— re-indexing with --force.',
+    );
+    await indexCommand({ ...options, force: true, _healed: true });
+    return;
+  }
+
+  if (options._healed && finalTreeSitterSymbols === 0 && tsitterFiles + tsitterSkipped >= 1) {
+    // Forced full pass still empty with code present: a genuine grammar/parse failure,
+    // not the sticky-empty incremental bug. Accept (do NOT loop) and surface the reason.
+    // Logged on stdout to share the self-heal narrative channel — this is an accepted
+    // outcome the operator should see, not a process error.
+    console.log(
+      '[recon] warning: forced re-index still produced zero tree-sitter symbols with ' +
+        'code files present — accepting as a genuine grammar/parse failure (not retrying).',
+    );
   }
 
   // Cross-language analysis: link TS API calls to Go handlers
@@ -756,10 +810,26 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
   if (!options?.noIndex) {
     const existing = await loadIndex(projectRoot, repoName);
     const git = getGitInfo(projectRoot);
-    const needsIndex = !existing || existing.meta.gitCommit !== git.commit;
+    // Reindex on startup when the index is absent, stale (commit moved), OR
+    // DEGENERATE — a loaded index with zero tree-sitter symbols while code files
+    // are present. The pre-C2 gate (!existing || commit mismatch) served a
+    // degenerate-but-current index dark, keeping an install empty across restarts.
+    // serveNeedsReindex REUSES C1's shouldReactiveHeal detector to catch it ([#10]).
+    const tsitterLangs = getAvailableLanguages();
+    const needsIndex = serveNeedsReindex({
+      existingGraph: existing?.graph ?? null,
+      fileHashes: existing?.meta.fileHashes ?? {},
+      indexedCommit: existing?.meta.gitCommit ?? null,
+      currentCommit: git.commit,
+      tsitterLangs,
+    });
 
     if (needsIndex) {
-      const reason = !existing ? 'no index found' : 'index is stale';
+      const reason = !existing
+        ? 'no index found'
+        : existing.meta.gitCommit !== git.commit
+          ? 'index is stale'
+          : 'loaded index is degenerate (zero code symbols, code present)';
       console.error(`[recon] Auto-indexing (${reason})...`);
       // embeddings:false — the serve auto-index must NOT regenerate embeddings.
       // Embedding generation re-embeds the WHOLE graph synchronously, blocking serve
@@ -796,6 +866,16 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
 
   let graph: KnowledgeGraph;
   let vectorStore: VectorStore | null = null;
+  // The indexed short commit the freshness watermark ([#9]) compares against. It is
+  // projectRoot's own indexed commit: the loaded repo's in single-repo mode, the root
+  // repo's in merged mode. Passed to the serve transports, which compute the live dirty
+  // count from git per answer. Undefined → no footer (graceful).
+  let indexedCommit: string | undefined;
+  // [#11] D2: when a live watcher runs, the serve transports read the live dirty-set count
+  // through this provider (no git per answer); the watcher maintains the set. Left undefined
+  // on the cold path (serve --no-watch, or no indexed commit) → transports fall back to the
+  // on-demand computeFreshness git count ([#9]), so that path is unchanged.
+  let freshnessProvider: FreshnessProvider | undefined;
 
   if (repoName) {
     // Load specific repo
@@ -805,6 +885,7 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
       process.exit(1);
     }
     graph = stored.graph;
+    indexedCommit = stored.meta.gitCommit;
     vectorStore = await loadEmbeddings(projectRoot, repoName);
     console.error(`[recon] Loaded repo '${repoName}': ${graph.nodeCount} nodes, ${graph.relationshipCount} relationships`);
   } else {
@@ -812,6 +893,10 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
     const allRepos = await loadAllRepos(projectRoot);
     if (allRepos) {
       graph = allRepos.graph;
+      // The freshness base is projectRoot's OWN indexed commit — the root repo in the
+      // merged set (its name = basename(projectRoot)). Absent if the root isn't indexed.
+      const rootName = defaultRepoName(projectRoot);
+      indexedCommit = allRepos.repos.find(r => r.name === rootName)?.meta.gitCommit;
       const repoNames = allRepos.repos.map(r => r.name).join(', ');
       console.error(`[recon] Loaded ${allRepos.repos.length} repo(s) [${repoNames}]: ${graph.nodeCount} nodes, ${graph.relationshipCount} relationships`);
     } else {
@@ -821,6 +906,7 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
         process.exit(1);
       }
       graph = stored.graph;
+      indexedCommit = stored.meta.gitCommit;
       console.error(`[recon] Loaded index: ${graph.nodeCount} nodes, ${graph.relationshipCount} relationships`);
     }
     vectorStore = await loadEmbeddings(projectRoot, repoName);
@@ -862,6 +948,17 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
     for (const dir of projects) {
       watchDirs.push({ dir: resolve(dir), repoName: basename(resolve(dir)).toLowerCase() });
     }
+    // [#11] D2: seed the live dirty set from git so offline edits (made while serve was down)
+    // show in the count at startup, then let the watcher maintain it (add on observe, remove
+    // on re-parse). The serve footer reads the set's live size via freshnessProvider — near-
+    // zero when the watcher keeps up — instead of a git count per answer. Requires an indexed
+    // commit to compare against; absent → no footer (graceful, back-compat). The baseline
+    // (commit + comparability) is fixed once here; serveFreshness pairs it with the live size.
+    const dirtySet = indexedCommit ? seedDirtySet({ projectRoot, indexedCommit }) : undefined;
+    if (indexedCommit && dirtySet) {
+      const baseline = computeFreshness({ projectRoot, indexedCommit });
+      freshnessProvider = () => serveFreshness(baseline, dirtySet);
+    }
     // onChange: the live BM25 ranker is built ONCE above, so recon_find goes
     // stale after a watched `.md`/source edit until restart. Rebuild it from the
     // SAME in-place-mutated graph + the reloaded searchText snapshot whenever the
@@ -873,6 +970,7 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
         const st = await loadSearchText(projectRoot, repoName);
         setFulltextRanker(BM25Index.buildFromGraph(graph, st ?? undefined));
       },
+      dirtySet,
     );
     watcher.start();
   }
@@ -947,7 +1045,7 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
     // hot-swap above — not a stale by-value snapshot (recon-brain-recall-01).
     const { startHttpServer } = await import('../server/http.js');
     const port = options?.port || config.port;
-    await startHttpServer({ port, graph, projectRoot, vectorStore: () => liveStore });
+    await startHttpServer({ port, graph, projectRoot, vectorStore: () => liveStore, indexedCommit, freshnessProvider });
     // Keep process alive
     await new Promise(() => { });
   } else {
@@ -964,6 +1062,8 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
       graph,
       projectRoot,
       vectorStore: () => liveStore,
+      indexedCommit,
+      freshnessProvider,
     });
     if (door) {
       // Self-heal heartbeat (recon-wrxn#4): co-located serves share ONE discovery
@@ -989,8 +1089,11 @@ export async function serveCommand(options?: { repo?: string; http?: boolean; po
 
     console.error('[recon] MCP server starting on stdio...');
     // Pass a GETTER so each CallTool resolves the current store — this is what
-    // makes the mid-session hybrid swap visible without a restart.
-    await startServer(graph, projectRoot, () => liveStore);
+    // makes the mid-session hybrid swap visible without a restart. indexedCommit is
+    // the freshness watermark base ([#9]); freshnessProvider, when set, makes each
+    // CallTool read the live watcher-maintained dirty-set count ([#11] D2) — else it
+    // falls back to the on-demand git count (serve --no-watch / no indexed commit).
+    await startServer(graph, projectRoot, () => liveStore, indexedCommit, freshnessProvider);
   }
 }
 

@@ -19,10 +19,11 @@
  * prove the concurrent door comes up + answers, rather than mocking the socket.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { mkdtempSync, existsSync, writeFileSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, existsSync, writeFileSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import {
   writeEndpoint,
   removeEndpoint,
@@ -35,6 +36,7 @@ import type { QueryDoorHandle } from '../../src/server/endpoint.js';
 import { KnowledgeGraph } from '../../src/graph/graph.js';
 import { NodeType, Language } from '../../src/graph/types.js';
 import { loadConfig, initConfig } from '../../src/config/config.js';
+import { serveNeedsReindex } from '../../src/analyzers/tree-sitter/carryover.js';
 
 const ENDPOINT_FILE = 'serve-endpoint.json';
 
@@ -208,6 +210,172 @@ describe('cooperative ownership — pid-guarded remove + claim-if-free (recon-wr
     expect(onDisk(dir)).toEqual(B);
     expect(readEndpoint(dir, alive)).toEqual(B); // resolves to the live survivor
   });
+});
+
+// ─── Serve-startup self-heal of a degenerate loaded index (C2, [#10]) ────────
+//
+// The serve-startup gate currently auto-indexes ONLY when no index exists or the
+// commit moved (stale). A LOADED index that is degenerate — zero tree-sitter
+// symbols while code files are present — passes the gate and is served dark,
+// which keeps an install empty across every restart. serveNeedsReindex extends
+// the startup decision to also fire on a degenerate loaded index, REUSING C1's
+// detection (shouldReactiveHeal) — no second detector. The decision is the seam:
+// the served-graph-has-symbols>0 outcome follows from indexCommand's own heal,
+// already proven end-to-end by the index self-heal suite ([#8]).
+
+describe('serve-startup self-heal: degenerate loaded index triggers reindex ([#10])', () => {
+  const TS = [Language.TypeScript];
+
+  /** A graph with `n` tree-sitter (TypeScript) symbols. */
+  function graphWithSymbols(n: number): KnowledgeGraph {
+    const g = new KnowledgeGraph();
+    for (let i = 0; i < n; i++) {
+      g.addNode({
+        id: `ts:func:fn${i}`, type: NodeType.Function, name: `fn${i}`, file: `src/mod${i}.ts`,
+        startLine: 1, endLine: 2, language: Language.TypeScript, package: 'src', exported: true,
+      });
+    }
+    return g;
+  }
+
+  /** fileHashes for `n` code files (the "code present" signal serve reads). */
+  function codeHashes(n: number): Record<string, string> {
+    const h: Record<string, string> = {};
+    for (let i = 0; i < n; i++) h[`src/mod${i}.ts`] = `hash${i}`;
+    return h;
+  }
+
+  it('a degenerate loaded index (zero symbols, code present, same commit) → reindex', () => {
+    // The exact sticky-dark state: hashes recorded for code files, but the loaded
+    // graph holds zero tree-sitter symbols, and the commit has NOT moved (so the
+    // pre-C2 staleness gate would have served it as-is).
+    expect(
+      serveNeedsReindex({
+        existingGraph: graphWithSymbols(0), // degenerate: zero symbols
+        fileHashes: codeHashes(5),          // but 5 code files are present
+        indexedCommit: 'abc123',
+        currentCommit: 'abc123',            // same commit → not "stale"
+        tsitterLangs: TS,
+      }),
+    ).toBe(true);
+  });
+
+  it('a HEALTHY loaded index (symbols present, same commit) → no reindex (no startup-cost regression)', () => {
+    expect(
+      serveNeedsReindex({
+        existingGraph: graphWithSymbols(5), // populated graph
+        fileHashes: codeHashes(5),
+        indexedCommit: 'abc123',
+        currentCommit: 'abc123',
+        tsitterLangs: TS,
+      }),
+    ).toBe(false);
+  });
+
+  it('a DOCS-ONLY index (zero symbols, ZERO code files) → no reindex (docs-only stays zero, never heals)', () => {
+    // Zero tree-sitter symbols is LEGITIMATE here — there are no code-typed files in
+    // fileHashes, only prose. shouldReactiveHeal must not fire (codeFilesPresent=0).
+    expect(
+      serveNeedsReindex({
+        existingGraph: graphWithSymbols(0),
+        fileHashes: { 'README.md': 'h', 'docs/guide.md': 'h2' }, // prose only
+        indexedCommit: 'abc123',
+        currentCommit: 'abc123',
+        tsitterLangs: TS,
+      }),
+    ).toBe(false);
+  });
+
+  it('no index loaded (absent) → reindex (preserves the prior "no index found" path)', () => {
+    expect(
+      serveNeedsReindex({
+        existingGraph: null,
+        fileHashes: {},
+        indexedCommit: null,
+        currentCommit: 'abc123',
+        tsitterLangs: TS,
+      }),
+    ).toBe(true);
+  });
+
+  it('a STALE loaded index (commit moved) → reindex even when populated (preserves prior staleness)', () => {
+    expect(
+      serveNeedsReindex({
+        existingGraph: graphWithSymbols(5), // populated, but…
+        fileHashes: codeHashes(5),
+        indexedCommit: 'old111',
+        currentCommit: 'new222',            // …commit moved → stale
+        tsitterLangs: TS,
+      }),
+    ).toBe(true);
+  });
+});
+
+// ─── End-to-end: serve startup actually heals + serves symbols ([#10]) ────────
+//
+// The decision block above proves serveNeedsReindex; this proves serveCommand WIRES
+// it. Drive the REAL `serve` binary against a persisted degenerate index (the exact
+// sticky-dark state, seeded the C1 way: a correct --force index with the code symbols
+// surgically stripped from graph.json, fileHashes left intact). serve must auto-index
+// on startup and persist a healed graph; we poll graph.json for symbols, then kill the
+// (otherwise-blocking) stdio server. Subprocess pattern mirrors the index self-heal
+// suite — worker_threads inside vitest's own pool hangs, a fresh node process does not.
+
+describe('serve startup self-heals a degenerate persisted index end-to-end ([#10])', () => {
+  const RECON_BIN = join(dirname(fileURLToPath(import.meta.url)), '../../bin/recon-wrxn');
+  const dirs: string[] = [];
+  const procs: ReturnType<typeof spawn>[] = [];
+  afterEach(() => {
+    for (const p of procs.splice(0)) { try { p.kill('SIGKILL'); } catch { /* already gone */ } }
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  const reconDir = (root: string) => join(root, '.recon-wrxn');
+  const readGraph = (root: string) =>
+    JSON.parse(readFileSync(join(reconDir(root), 'graph.json'), 'utf-8'));
+  const tsSymbolCount = (root: string): number =>
+    readGraph(root).nodes.filter((n: { language: string }) => n.language === 'typescript').length;
+
+  const index = (root: string, args: string[] = []) =>
+    execFileSync('node', [RECON_BIN, 'index', ...args, '--no-embeddings'], {
+      cwd: root, stdio: 'pipe', encoding: 'utf-8',
+    });
+
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  it('starting serve against a sticky-empty (degenerate) index recovers symbols > 0', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'recon-serve-heal-'));
+    dirs.push(root);
+    mkdirSync(join(root, 'src'), { recursive: true });
+    for (let i = 0; i < 4; i++) {
+      writeFileSync(join(root, 'src', `mod${i}.ts`), `export function fn${i}(x: number) {\n  return x + ${i};\n}\n`);
+    }
+
+    // Seed the degenerate index: a correct --force index, then strip ALL typescript
+    // symbols from graph.json while leaving meta.json (with fileHashes) intact.
+    index(root, ['--force']);
+    const g = readGraph(root);
+    g.nodes = g.nodes.filter((n: { language: string }) => n.language !== 'typescript');
+    g.relationships = [];
+    writeFileSync(join(reconDir(root), 'graph.json'), JSON.stringify(g, null, 2));
+    expect(tsSymbolCount(root)).toBe(0); // precondition: sticky-empty
+
+    // Start the REAL serve (stdio). --no-watch/--no-serve-embed keep it minimal; it
+    // auto-indexes on startup BEFORE blocking on stdio, persisting the healed graph.
+    const proc = spawn('node', [RECON_BIN, 'serve', '--no-watch', '--no-serve-embed'], {
+      cwd: root, stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    procs.push(proc);
+
+    // Poll the persisted graph until the startup heal lands symbols (or time out).
+    let healed = 0;
+    for (let i = 0; i < 60 && healed === 0; i++) {
+      await sleep(500);
+      try { healed = tsSymbolCount(root); } catch { /* graph mid-rewrite */ }
+    }
+
+    expect(healed).toBeGreaterThan(0); // serve startup reindexed the degenerate index
+  }, 60_000);
 });
 
 describe('query-door orchestration gate (recon-brain-recall-02)', () => {

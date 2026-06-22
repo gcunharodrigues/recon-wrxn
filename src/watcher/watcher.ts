@@ -130,6 +130,11 @@ export class ReconWatcher {
     private maxFileSize: number = Infinity,
     private store?: SqliteStore,
     private onChange?: () => void | Promise<void>,
+    // [#11] D2: the live dirty set serve seeds from git at startup. The watcher keeps it
+    // current — ADD a file when its change is observed (handleFileEvent), REMOVE it once it
+    // is successfully re-parsed (processFile) — so the freshness footer reflects the live
+    // served graph, near-zero when the watcher keeps up. Absent (cold/CLI) → no maintenance.
+    private dirtySet?: Set<string>,
   ) {}
 
   /**
@@ -247,6 +252,13 @@ export class ReconWatcher {
     const project = this.projectDirs.find(p => absPath.startsWith(resolve(p.dir)));
     if (!project) return;
 
+    // [#11] D2: the watcher OBSERVED a change — mark the file dirty in the live set NOW,
+    // before debounce/re-parse, so the served count rises the moment an edit lands.
+    // processFile removes it again once the file is re-absorbed into the graph.
+    if (this.dirtySet) {
+      this.dirtySet.add(relative(project.dir, absPath).replace(/\\/g, '/'));
+    }
+
     const existing = this.debounceTimers.get(absPath);
     if (existing) clearTimeout(existing);
 
@@ -274,6 +286,10 @@ export class ReconWatcher {
    */
   private async processFile(absPath: string, repoName: string, event: string): Promise<void> {
     this.indexLock = true;
+    // [#11] D2: set to the file's relPath only once it is SUCCESSFULLY re-absorbed, then
+    // cleared from the live dirty set in `finally`. Stays null on a throw, so a failed
+    // re-parse correctly leaves the file dirty (still diverged from the served graph).
+    let absorbed: string | null = null;
 
     try {
       const project = this.projectDirs.find(p => absPath.startsWith(resolve(p.dir)));
@@ -304,6 +320,8 @@ export class ReconWatcher {
             this.store.removeNodesByFile(relPath);
           }
         }
+        // The deletion is now reflected in the graph → the file is absorbed (D2).
+        absorbed = relPath;
         return;
       }
 
@@ -339,6 +357,8 @@ export class ReconWatcher {
       };
 
       this.maybeAutoSave();
+      // Re-parse applied to the graph → the file is absorbed; clear it in `finally` (D2).
+      absorbed = relPath;
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       console.error(`[recon:watch] Error processing ${absPath}: ${msg}`);
@@ -350,6 +370,9 @@ export class ReconWatcher {
       });
       if (watcherStatus.errors.length > 10) watcherStatus.errors.shift();
     } finally {
+      // [#11] D2: a successfully re-absorbed file leaves the live dirty set; a throw left
+      // `absorbed` null, so the file stays counted until a later event re-parses it cleanly.
+      if (absorbed && this.dirtySet) this.dirtySet.delete(absorbed);
       this.indexLock = false;
       watcherStatus.pendingCount = this.pendingQueue.length;
 

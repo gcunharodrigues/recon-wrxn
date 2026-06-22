@@ -22,7 +22,11 @@ const RECON_BIN = join(dirname(fileURLToPath(import.meta.url)), '../../bin/recon
 import { NodeType, RelationshipType, Language } from '../../src/graph/types.js';
 import type { Node, Relationship } from '../../src/graph/types.js';
 import { KnowledgeGraph } from '../../src/graph/graph.js';
-import { carryOverUnchangedTreeSitter } from '../../src/analyzers/tree-sitter/carryover.js';
+import {
+  carryOverUnchangedTreeSitter,
+  pruneDegenerateHashes,
+  shouldReactiveHeal,
+} from '../../src/analyzers/tree-sitter/carryover.js';
 
 // ─── Helpers ────────────────────────────────────────────────────
 
@@ -41,6 +45,15 @@ function mkNode(partial: Partial<Node> & { id: string; file: string }): Node {
 
 function mkRel(id: string, sourceId: string, targetId: string): Relationship {
   return { id, type: RelationshipType.CALLS, sourceId, targetId, confidence: 1.0 };
+}
+
+// Pass-6 edge shapes (extractor.ts): Package→File CONTAINS and Package→Package IMPORTS,
+// with the production `${sourceId}-<TYPE>-${targetId}` id format.
+function mkContains(sourceId: string, targetId: string): Relationship {
+  return { id: `${sourceId}-CONTAINS-${targetId}`, type: RelationshipType.CONTAINS, sourceId, targetId, confidence: 1.0 };
+}
+function mkImports(sourceId: string, targetId: string): Relationship {
+  return { id: `${sourceId}-IMPORTS-${targetId}`, type: RelationshipType.IMPORTS, sourceId, targetId, confidence: 1.0 };
 }
 
 // ─── Pure merge logic ───────────────────────────────────────────
@@ -169,6 +182,177 @@ describe('carryOverUnchangedTreeSitter', () => {
     carryOverUnchangedTreeSitter(fresh, prev, langs, [], { 'a.py': 'h' });
 
     expect(fresh.getNode('A')?.name).toBe('NEW');
+  });
+
+  it('carries forward a directory Package node (and its CONTAINS/IMPORTS edges) on a healthy incremental [#12]', () => {
+    // Repro of #12: a force index builds directory Package nodes (type=Package, file="src" —
+    // a directory NAME, never a fileHashes key). The next plain incremental dropped them
+    // because the carry-over required node.file ∈ newFileHashes, which a directory file never
+    // satisfies. recon_map (CONTAINS) and findCircularDeps (Package→Package IMPORTS) then
+    // showed no packages. A directory package must survive when its files are still present.
+    const prev = new KnowledgeGraph();
+    prev.addNode(mkNode({ id: 'js:file:src/a.js', file: 'src/a.js', type: NodeType.File, language: Language.JavaScript }));
+    prev.addNode(mkNode({ id: 'js:file:lib/b.js', file: 'lib/b.js', type: NodeType.File, language: Language.JavaScript }));
+    prev.addNode(mkNode({ id: 'js:pkg:src', file: 'src', name: 'src', package: 'src', type: NodeType.Package, language: Language.JavaScript }));
+    prev.addNode(mkNode({ id: 'js:pkg:lib', file: 'lib', name: 'lib', package: 'lib', type: NodeType.Package, language: Language.JavaScript }));
+    prev.addRelationship(mkContains('js:pkg:src', 'js:file:src/a.js'));
+    prev.addRelationship(mkContains('js:pkg:lib', 'js:file:lib/b.js'));
+    prev.addRelationship(mkImports('js:pkg:src', 'js:pkg:lib')); // src/a.js imports lib/b.js, lifted
+
+    const fresh = new KnowledgeGraph();
+    // Healthy incremental: nothing changed → fresh graph empty, nothing analyzed, both files present.
+    carryOverUnchangedTreeSitter(fresh, prev, langs, [], { 'src/a.js': 'h', 'lib/b.js': 'h' });
+
+    // The fix: the directory packages survive (were dropped before).
+    expect(fresh.getNode('js:pkg:src')).toBeDefined();
+    expect(fresh.getNode('js:pkg:lib')).toBeDefined();
+    // Their constituent files are still carried.
+    expect(fresh.getNode('js:file:src/a.js')).toBeDefined();
+    expect(fresh.getNode('js:file:lib/b.js')).toBeDefined();
+    // recon_map reads Package→File CONTAINS; findCircularDeps reads Package→Package IMPORTS.
+    expect(fresh.getRelationship('js:pkg:src-CONTAINS-js:file:src/a.js')).toBeDefined();
+    expect(fresh.getRelationship('js:pkg:lib-CONTAINS-js:file:lib/b.js')).toBeDefined();
+    expect(fresh.getRelationship('js:pkg:src-IMPORTS-js:pkg:lib')).toBeDefined();
+  });
+
+  it('does NOT carry a directory Package node whose constituent files have all vanished [#12]', () => {
+    // Guard for the #12 fix: preserving directory packages must not resurrect an ORPHAN — a
+    // package whose every file was deleted (or re-parsed away by C1's degenerate prune) this
+    // run. It survives only while ≥1 of its previous CONTAINS targets is still present.
+    const prev = new KnowledgeGraph();
+    prev.addNode(mkNode({ id: 'js:file:gone/old.js', file: 'gone/old.js', type: NodeType.File, language: Language.JavaScript }));
+    prev.addNode(mkNode({ id: 'js:pkg:gone', file: 'gone', name: 'gone', package: 'gone', type: NodeType.Package, language: Language.JavaScript }));
+    prev.addRelationship(mkContains('js:pkg:gone', 'js:file:gone/old.js'));
+
+    const fresh = new KnowledgeGraph();
+    // gone/old.js was deleted → absent from the new fileHashes → the package is orphaned.
+    carryOverUnchangedTreeSitter(fresh, prev, langs, [], { 'src/a.js': 'h' });
+
+    expect(fresh.getNode('js:file:gone/old.js')).toBeUndefined(); // deleted file dropped
+    expect(fresh.getNode('js:pkg:gone')).toBeUndefined(); // orphan package NOT preserved
+  });
+});
+
+// ─── Preventive carry-over: drop degenerate-file hashes (per-file) ──
+
+describe('pruneDegenerateHashes', () => {
+  const langs = [Language.Python, Language.JavaScript];
+
+  it('drops the hash of an unchanged code file whose previous graph holds zero symbols', () => {
+    // a.py was recorded as "seen" (hash present) but the previous graph has no symbols
+    // for it — a partially-degenerate carry-over. Its hash must be dropped so the next
+    // analyzer pass treats it as changed and RE-PARSES it instead of carrying it empty.
+    const prev = new KnowledgeGraph();
+    prev.addNode(mkNode({ id: 'py:func:b.py:foo:1', file: 'b.py' })); // b.py has symbols
+
+    const pruned = pruneDegenerateHashes({ 'a.py': 'h1', 'b.py': 'h2' }, prev, langs);
+
+    expect(pruned['a.py']).toBeUndefined(); // empty-in-prev → re-parse
+    expect(pruned['b.py']).toBe('h2'); // has symbols → still carryable
+  });
+
+  it('keeps every hash when the previous graph holds symbols for all code files', () => {
+    const prev = new KnowledgeGraph();
+    prev.addNode(mkNode({ id: 'py:func:a.py:foo:1', file: 'a.py' }));
+    prev.addNode(mkNode({ id: 'py:func:b.py:bar:1', file: 'b.py' }));
+
+    const pruned = pruneDegenerateHashes({ 'a.py': 'h1', 'b.py': 'h2' }, prev, langs);
+
+    expect(pruned).toEqual({ 'a.py': 'h1', 'b.py': 'h2' }); // healthy → unchanged
+  });
+
+  it('does NOT drop a non-code (markdown/prose) hash — only tree-sitter files are repaired', () => {
+    // Prose/markdown files are not tree-sitter symbols; their absence from the code graph
+    // is normal and must not force a re-parse on the tree-sitter walk.
+    const prev = new KnowledgeGraph();
+    prev.addNode(mkNode({ id: 'py:func:a.py:foo:1', file: 'a.py' }));
+
+    const pruned = pruneDegenerateHashes(
+      { 'a.py': 'h1', 'docs/readme.md': 'h2' },
+      prev,
+      langs,
+    );
+
+    expect(pruned['a.py']).toBe('h1');
+    expect(pruned['docs/readme.md']).toBe('h2'); // not a code file → untouched
+  });
+
+  it('does not mutate the input hashes object (returns a fresh map)', () => {
+    const prev = new KnowledgeGraph();
+    const input = { 'a.py': 'h1' };
+
+    const pruned = pruneDegenerateHashes(input, prev, langs);
+
+    expect(input).toEqual({ 'a.py': 'h1' }); // caller's object untouched
+    expect(pruned).not.toBe(input);
+  });
+});
+
+// ─── Reactive recovery: the heal decision (pure, no walk) ───────────
+
+describe('shouldReactiveHeal', () => {
+  // Detection from existing index stats (parsed + skipped) + final graph symbol count.
+  // codeFilesDiscovered = parsed + skipped; heal only when the final graph is empty of
+  // code symbols AND code files exist AND the run was incremental AND it has not healed yet.
+
+  it('heals when the run is incremental, code files exist, and the final graph has zero symbols', () => {
+    expect(
+      shouldReactiveHeal({
+        finalSymbols: 0,
+        parsed: 0,
+        skipped: 5,
+        incremental: true,
+        alreadyHealed: false,
+      }),
+    ).toBe(true);
+  });
+
+  it('does NOT heal when the final graph already has code symbols', () => {
+    expect(
+      shouldReactiveHeal({
+        finalSymbols: 7,
+        parsed: 2,
+        skipped: 3,
+        incremental: true,
+        alreadyHealed: false,
+      }),
+    ).toBe(false);
+  });
+
+  it('does NOT heal a docs-only repo (zero discovered code files)', () => {
+    expect(
+      shouldReactiveHeal({
+        finalSymbols: 0,
+        parsed: 0,
+        skipped: 0,
+        incremental: true,
+        alreadyHealed: false,
+      }),
+    ).toBe(false);
+  });
+
+  it('does NOT heal a forced (non-incremental) run — force is already the full path', () => {
+    expect(
+      shouldReactiveHeal({
+        finalSymbols: 0,
+        parsed: 0,
+        skipped: 5,
+        incremental: false,
+        alreadyHealed: false,
+      }),
+    ).toBe(false);
+  });
+
+  it('does NOT heal twice — once a run has healed, a still-zero result is accepted', () => {
+    expect(
+      shouldReactiveHeal({
+        finalSymbols: 0,
+        parsed: 5,
+        skipped: 0,
+        incremental: true,
+        alreadyHealed: true,
+      }),
+    ).toBe(false);
   });
 });
 

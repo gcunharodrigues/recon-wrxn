@@ -18,6 +18,7 @@ import type { Server } from 'node:http';
 import { createApp } from './http.js';
 import type { KnowledgeGraph } from '../graph/graph.js';
 import type { VectorStoreSource } from '../mcp/server.js';
+import type { FreshnessProvider } from '../mcp/freshness.js';
 
 /** The discovery-file payload. The cross-repo contract — extend with care. */
 export interface ServeEndpoint {
@@ -151,6 +152,10 @@ export async function maybeStartQueryDoor(opts: {
   graph: KnowledgeGraph;
   projectRoot?: string;
   vectorStore?: VectorStoreSource;
+  /** The graph's indexed commit — the freshness watermark base ([#9]). */
+  indexedCommit?: string;
+  /** The serve live-set freshness provider ([#11] D2) — the door footer reads it too. */
+  freshnessProvider?: FreshnessProvider;
 }): Promise<QueryDoorHandle | null> {
   if (!opts.serveHttp) return null;
 
@@ -159,6 +164,8 @@ export async function maybeStartQueryDoor(opts: {
     graph: opts.graph,
     projectRoot: opts.projectRoot,
     vectorStore: opts.vectorStore,
+    indexedCommit: opts.indexedCommit,
+    freshnessProvider: opts.freshnessProvider,
   });
 
   const server = await new Promise<Server>((resolve, reject) => {

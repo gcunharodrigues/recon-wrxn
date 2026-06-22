@@ -19,6 +19,8 @@ import { KnowledgeGraph } from '../graph/graph.js';
 import type { VectorStore } from '../search/vector-store.js';
 import { RECON_TOOLS } from './tools.js';
 import { handleToolCall } from './handlers.js';
+import { computeFreshness } from './freshness.js';
+import type { FreshnessProvider } from './freshness.js';
 
 import { RECON_INSTRUCTIONS } from './instructions.js';
 import {
@@ -53,6 +55,10 @@ export function createServer(
   graph: KnowledgeGraph,
   projectRoot?: string,
   vectorStore?: VectorStoreSource,
+  indexedCommit?: string,
+  // [#11] D2: when serve runs a live watcher, it injects this provider so the footer reads
+  // the live dirty set (near-zero steady state). Absent → the cold-path git compute below.
+  freshnessProvider?: FreshnessProvider,
 ): Server {
   const server = new Server(
     { name: SERVER_NAME, version: VERSION },
@@ -123,12 +129,23 @@ export function createServer(
       // Resolve the store PER request so a mid-session live-swap is seen by the
       // very next CallTool — handleToolCall's signature is unchanged.
       const vs = typeof vectorStore === 'function' ? vectorStore() : vectorStore;
+      // The freshness watermark for this answer. In serve with a live watcher ([#11] D2) the
+      // injected provider returns the live dirty-set count (no git per answer). Otherwise
+      // ([#9] cold path: `serve --no-watch`, tests) it is computed at ANSWER TIME from git
+      // against projectRoot with the indexed commit as the base. Skipped when projectRoot/
+      // commit are absent → no footer (back-compat). Either way it never re-indexes.
+      const freshness = freshnessProvider
+        ? freshnessProvider()
+        : projectRoot && indexedCommit
+          ? computeFreshness({ projectRoot, indexedCommit })
+          : undefined;
       const result = await handleToolCall(
         name,
         args as Record<string, unknown> | undefined,
         graph,
         projectRoot,
         vs,
+        freshness,
       );
       return {
         content: [{ type: 'text', text: result }],
@@ -170,8 +187,10 @@ export async function startServer(
   graph: KnowledgeGraph,
   projectRoot?: string,
   vectorStore?: VectorStoreSource,
+  indexedCommit?: string,
+  freshnessProvider?: FreshnessProvider,
 ): Promise<void> {
-  const server = createServer(graph, projectRoot, vectorStore);
+  const server = createServer(graph, projectRoot, vectorStore, indexedCommit, freshnessProvider);
   const transport = new StdioServerTransport();
 
   let shuttingDown = false;
