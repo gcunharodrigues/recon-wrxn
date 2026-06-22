@@ -214,6 +214,23 @@ describe('carryOverUnchangedTreeSitter', () => {
     expect(fresh.getRelationship('js:pkg:lib-CONTAINS-js:file:lib/b.js')).toBeDefined();
     expect(fresh.getRelationship('js:pkg:src-IMPORTS-js:pkg:lib')).toBeDefined();
   });
+
+  it('does NOT carry a directory Package node whose constituent files have all vanished [#12]', () => {
+    // Guard for the #12 fix: preserving directory packages must not resurrect an ORPHAN — a
+    // package whose every file was deleted (or re-parsed away by C1's degenerate prune) this
+    // run. It survives only while ≥1 of its previous CONTAINS targets is still present.
+    const prev = new KnowledgeGraph();
+    prev.addNode(mkNode({ id: 'js:file:gone/old.js', file: 'gone/old.js', type: NodeType.File, language: Language.JavaScript }));
+    prev.addNode(mkNode({ id: 'js:pkg:gone', file: 'gone', name: 'gone', package: 'gone', type: NodeType.Package, language: Language.JavaScript }));
+    prev.addRelationship(mkContains('js:pkg:gone', 'js:file:gone/old.js'));
+
+    const fresh = new KnowledgeGraph();
+    // gone/old.js was deleted → absent from the new fileHashes → the package is orphaned.
+    carryOverUnchangedTreeSitter(fresh, prev, langs, [], { 'src/a.js': 'h' });
+
+    expect(fresh.getNode('js:file:gone/old.js')).toBeUndefined(); // deleted file dropped
+    expect(fresh.getNode('js:pkg:gone')).toBeUndefined(); // orphan package NOT preserved
+  });
 });
 
 // ─── Preventive carry-over: drop degenerate-file hashes (per-file) ──
