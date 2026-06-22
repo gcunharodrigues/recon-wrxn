@@ -12,6 +12,7 @@
  * dropped) is unit-testable without the filesystem / worker-pool / embedding stack.
  */
 
+import { NodeType } from '../../graph/types.js';
 import type { Language } from '../../graph/types.js';
 import type { KnowledgeGraph } from '../../graph/graph.js';
 import { getLanguageForFile } from './parser.js';
@@ -53,7 +54,11 @@ export function carryOverUnchangedTreeSitter(
   for (const node of previousGraph.nodes.values()) {
     if (!langSet.has(node.language)) continue;
     if (analyzed.has(node.file)) continue;
-    if (!(node.file in newFileHashes)) continue;
+    // A directory Package node is keyed by a directory NAME (node.file = "src"), never a
+    // fileHashes key — so the file-presence rule below would always drop it on a healthy
+    // incremental. Structural Package nodes are carried separately (see below); every other
+    // node still requires its file to be present in the new index.
+    if (!(node.file in newFileHashes) && node.type !== NodeType.Package) continue;
     if (!graph.getNode(node.id)) {
       graph.addNode(node);
     }
