@@ -12,7 +12,7 @@
  * dropped) is unit-testable without the filesystem / worker-pool / embedding stack.
  */
 
-import { NodeType } from '../../graph/types.js';
+import { NodeType, RelationshipType } from '../../graph/types.js';
 import type { Language } from '../../graph/types.js';
 import type { KnowledgeGraph } from '../../graph/graph.js';
 import { getLanguageForFile } from './parser.js';
@@ -28,6 +28,13 @@ import { getLanguageForFile } from './parser.js';
  *     fresh nodes, so carrying its previous (stale) nodes would duplicate/poison them;
  *  3. its file still appears in the new fileHashes — a file that was deleted, became
  *     ignored, or FAILED to parse this run is absent from fileHashes and is dropped.
+ *
+ * EXCEPTION (#12) — directory Package nodes (Pass 6) are keyed by a directory name, not a
+ * source-file path, so rule 3 can never match them and a healthy incremental dropped them
+ * (degrading recon_map / findCircularDeps to "no packages" after the first plain index).
+ * Such a package is carried when rules 1–2 hold AND ≥1 of its constituent files (its previous
+ * CONTAINS targets) is still present in the new fileHashes; a package whose files all vanished
+ * is NOT resurrected.
  *
  * Relationships are carried with AND semantics: a previous rel survives only if BOTH
  * endpoints exist in the merged graph. This is intentionally stricter than the TS
@@ -51,14 +58,29 @@ export function carryOverUnchangedTreeSitter(
   const langSet = new Set<string>(tsitterLangs);
   const analyzed = new Set(analyzedFiles);
 
+  // Directory Package nodes (Pass 6) are keyed by a directory NAME (node.file = "src"), never
+  // a fileHashes key — so the file-presence rule below cannot see them and #12 dropped them on
+  // every healthy incremental. A directory package is carried only while ≥1 of its constituent
+  // files (its previous CONTAINS targets) is still present in the new index; a package whose
+  // files all vanished (deleted, or re-parsed away by pruneDegenerateHashes) is dropped, not
+  // resurrected as an orphan.
+  const packagesWithSurvivingFile = new Set<string>();
+  for (const rel of previousGraph.allRelationships()) {
+    if (rel.type !== RelationshipType.CONTAINS) continue;
+    const target = previousGraph.getNode(rel.targetId);
+    if (target && target.file in newFileHashes) {
+      packagesWithSurvivingFile.add(rel.sourceId);
+    }
+  }
+
   for (const node of previousGraph.nodes.values()) {
     if (!langSet.has(node.language)) continue;
     if (analyzed.has(node.file)) continue;
-    // A directory Package node is keyed by a directory NAME (node.file = "src"), never a
-    // fileHashes key — so the file-presence rule below would always drop it on a healthy
-    // incremental. Structural Package nodes are carried separately (see below); every other
-    // node still requires its file to be present in the new index.
-    if (!(node.file in newFileHashes) && node.type !== NodeType.Package) continue;
+    if (!(node.file in newFileHashes)) {
+      // Not keyed by a present file. The sole exception is a directory Package still backed by
+      // a surviving constituent file (see packagesWithSurvivingFile); everything else is dropped.
+      if (node.type !== NodeType.Package || !packagesWithSurvivingFile.has(node.id)) continue;
+    }
     if (!graph.getNode(node.id)) {
       graph.addNode(node);
     }
