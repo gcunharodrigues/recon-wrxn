@@ -47,6 +47,15 @@ function mkRel(id: string, sourceId: string, targetId: string): Relationship {
   return { id, type: RelationshipType.CALLS, sourceId, targetId, confidence: 1.0 };
 }
 
+// Pass-6 edge shapes (extractor.ts): Package→File CONTAINS and Package→Package IMPORTS,
+// with the production `${sourceId}-<TYPE>-${targetId}` id format.
+function mkContains(sourceId: string, targetId: string): Relationship {
+  return { id: `${sourceId}-CONTAINS-${targetId}`, type: RelationshipType.CONTAINS, sourceId, targetId, confidence: 1.0 };
+}
+function mkImports(sourceId: string, targetId: string): Relationship {
+  return { id: `${sourceId}-IMPORTS-${targetId}`, type: RelationshipType.IMPORTS, sourceId, targetId, confidence: 1.0 };
+}
+
 // ─── Pure merge logic ───────────────────────────────────────────
 
 describe('carryOverUnchangedTreeSitter', () => {
@@ -173,6 +182,37 @@ describe('carryOverUnchangedTreeSitter', () => {
     carryOverUnchangedTreeSitter(fresh, prev, langs, [], { 'a.py': 'h' });
 
     expect(fresh.getNode('A')?.name).toBe('NEW');
+  });
+
+  it('carries forward a directory Package node (and its CONTAINS/IMPORTS edges) on a healthy incremental [#12]', () => {
+    // Repro of #12: a force index builds directory Package nodes (type=Package, file="src" —
+    // a directory NAME, never a fileHashes key). The next plain incremental dropped them
+    // because the carry-over required node.file ∈ newFileHashes, which a directory file never
+    // satisfies. recon_map (CONTAINS) and findCircularDeps (Package→Package IMPORTS) then
+    // showed no packages. A directory package must survive when its files are still present.
+    const prev = new KnowledgeGraph();
+    prev.addNode(mkNode({ id: 'js:file:src/a.js', file: 'src/a.js', type: NodeType.File, language: Language.JavaScript }));
+    prev.addNode(mkNode({ id: 'js:file:lib/b.js', file: 'lib/b.js', type: NodeType.File, language: Language.JavaScript }));
+    prev.addNode(mkNode({ id: 'js:pkg:src', file: 'src', name: 'src', package: 'src', type: NodeType.Package, language: Language.JavaScript }));
+    prev.addNode(mkNode({ id: 'js:pkg:lib', file: 'lib', name: 'lib', package: 'lib', type: NodeType.Package, language: Language.JavaScript }));
+    prev.addRelationship(mkContains('js:pkg:src', 'js:file:src/a.js'));
+    prev.addRelationship(mkContains('js:pkg:lib', 'js:file:lib/b.js'));
+    prev.addRelationship(mkImports('js:pkg:src', 'js:pkg:lib')); // src/a.js imports lib/b.js, lifted
+
+    const fresh = new KnowledgeGraph();
+    // Healthy incremental: nothing changed → fresh graph empty, nothing analyzed, both files present.
+    carryOverUnchangedTreeSitter(fresh, prev, langs, [], { 'src/a.js': 'h', 'lib/b.js': 'h' });
+
+    // The fix: the directory packages survive (were dropped before).
+    expect(fresh.getNode('js:pkg:src')).toBeDefined();
+    expect(fresh.getNode('js:pkg:lib')).toBeDefined();
+    // Their constituent files are still carried.
+    expect(fresh.getNode('js:file:src/a.js')).toBeDefined();
+    expect(fresh.getNode('js:file:lib/b.js')).toBeDefined();
+    // recon_map reads Package→File CONTAINS; findCircularDeps reads Package→Package IMPORTS.
+    expect(fresh.getRelationship('js:pkg:src-CONTAINS-js:file:src/a.js')).toBeDefined();
+    expect(fresh.getRelationship('js:pkg:lib-CONTAINS-js:file:lib/b.js')).toBeDefined();
+    expect(fresh.getRelationship('js:pkg:src-IMPORTS-js:pkg:lib')).toBeDefined();
   });
 });
 
