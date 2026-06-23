@@ -120,6 +120,15 @@ export function resolveEvidenceEdges(
     // citation stays visible — fail-soft, never dropped). The syntactic gate also
     // short-circuits, so garbage never shells out to git via the checker.
     const commit = sig.commit;
+    // The commit is CONSTANT per signal, so resolve its existence ONCE here and
+    // reuse it across the session's fan-out — not once per event (which re-spawns
+    // `git cat-file` N times for the same sha). Gated on `events.length` so a signal
+    // that resolves to no events never probes at all (nothing to watermark), and on
+    // the syntactic SHA_RE so garbage never shells out to git via the checker.
+    const commitResolved =
+      commit && events.length > 0
+        ? SHA_RE.test(commit) && (commitExists ? commitExists(commit) : true)
+        : false;
     for (const ev of events) {
       const id = `${sig.sourceId}-EVIDENCED_BY-${ev.id}`;
       if (seen.has(id)) continue;
@@ -127,7 +136,7 @@ export function resolveEvidenceEdges(
       const metadata: Relationship['metadata'] = { tag: 'resolved' };
       if (commit) {
         metadata.commit = commit;
-        metadata.commitResolved = SHA_RE.test(commit) && (commitExists ? commitExists(commit) : true);
+        metadata.commitResolved = commitResolved;
       }
       edges.push({
         id,

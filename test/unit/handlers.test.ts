@@ -18,6 +18,7 @@ import { KnowledgeGraph } from '../../src/graph/graph.js';
 import { NodeType, RelationshipType, Language } from '../../src/graph/types.js';
 import type { Node, Relationship } from '../../src/graph/types.js';
 import { handleToolCall } from '../../src/mcp/handlers.js';
+import { RECON_TOOLS } from '../../src/mcp/tools.js';
 import { ANCHOR_CONFIDENCE } from '../../src/analyzers/doc-edges.js';
 
 // ─── Mock Graph Builder ─────────────────────────────────────────
@@ -671,6 +672,18 @@ describe('recon_explain verified-only view excludes inferred citations (citation
     const result = await handleToolCall('recon_explain', { name: 'Mixed Evidence Page', verified: true }, graphWithMixedEvidence());
     expect(result).toContain('resolved prompt');
     expect(result).not.toContain('inferred prompt');
+  });
+
+  // F1 (#24): the handler honors `verified` (above), but MCP clients can only USE it
+  // if the tool advertises it in its inputSchema. Pin that the contract exposes it.
+  it('recon_explain advertises `verified` as an optional, documented boolean (discoverable)', () => {
+    const tool = RECON_TOOLS.find((t) => t.name === 'recon_explain');
+    expect(tool).toBeDefined();
+    const prop = tool!.inputSchema.properties.verified;
+    expect(prop).toBeDefined();
+    expect(prop.type).toBe('boolean');
+    expect(prop.description).toBeTruthy();
+    expect(tool!.inputSchema.required ?? []).not.toContain('verified'); // optional
   });
 });
 

@@ -179,6 +179,26 @@ describe('resolveEvidenceEdges — commitResolved reflects real git history (inj
     const [bad] = resolveEvidenceEdges(buildGraph(), [sig({ session: 'sess-1', commit: 'xyz' })]);
     expect(bad.metadata?.commitResolved).toBe(false);
   });
+
+  // F2 (#24): the commit is CONSTANT per signal, so its existence must be resolved
+  // ONCE per signal and reused across the session's fan-out — not re-probed (a git
+  // cat-file spawn) once per event. sess-1 fans out to TWO SessionEvents here.
+  it('probes the injected checker at most ONCE per signal, not once per event (F2 dedup)', () => {
+    const calls: string[] = [];
+    const edges = resolveEvidenceEdges(buildGraph(),
+      [sig({ session: 'sess-1', commit: '5615acb' })],
+      (sha) => { calls.push(sha); return true; });
+    expect(edges.filter((e) => e.type === RelationshipType.EVIDENCED_BY)).toHaveLength(2);
+    expect(calls).toEqual(['5615acb']); // one probe for the two events, not two
+  });
+
+  it('never probes the checker when the signal resolves to NO events (nothing to watermark)', () => {
+    const calls: string[] = [];
+    resolveEvidenceEdges(buildGraph(),
+      [sig({ session: 'sess-does-not-exist', commit: '5615acb' })],
+      (sha) => { calls.push(sha); return true; });
+    expect(calls).toEqual([]); // no edge to carry the watermark → no git spawn at all
+  });
 });
 
 // ─── Fail-soft, idempotent, never throws (the AC robustness clause) ──

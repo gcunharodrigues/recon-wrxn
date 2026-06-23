@@ -56,6 +56,7 @@ export const RECON_TOOLS: ToolDefinition[] = [
         file: { type: 'string', description: 'File path to disambiguate if multiple matches' },
         depth: { type: 'number', description: 'Levels of callers/callees (default: 1)' },
         include_source: { type: 'boolean', description: 'Include source code snippet' },
+        verified: { type: 'boolean', description: 'Show only fact-verified citations: drop inferred provenance edges (unresolved commit watermarks) from Documents/Documented By/Evidenced By/Evidence For (default: false)' },
       },
       required: ['name'],
     },

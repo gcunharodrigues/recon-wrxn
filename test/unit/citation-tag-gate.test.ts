@@ -136,9 +136,9 @@ describe('runGate — a mis-tagged expectation forces FAIL (the gate is not vacu
 // ─── The durable gate report (AC4) ───────────────────────────────
 
 describe('renderGateReport — durable, deterministic record', () => {
-  it('matches the committed report at docs/eval/0006-citation-tag-gate.md', () => {
+  it('matches the committed report at docs/eval/0006-citation-tag-gate.md', async () => {
     const report = renderGateReport(runGate(GOLD));
     const path = fileURLToPath(new URL('../../docs/eval/0006-citation-tag-gate.md', import.meta.url));
-    expect(report).toMatchFileSnapshot(path);
+    await expect(report).toMatchFileSnapshot(path);
   });
 });
