@@ -53,6 +53,27 @@ export const EVIDENCE_CONFIDENCE = 0.9;
 const SHA_RE = /^[0-9a-f]{7,40}$/i;
 
 /**
+ * The EFFECTIVE resolved/inferred tag of a citation edge — the single verdict
+ * recon_explain surfaces (R3, #20), the verified-only view filters on, and the
+ * citation-tag gate locks. An edge is `resolved` only when fully fact-verified.
+ * The one heuristic band is an EVIDENCED_BY commit watermark that is DECLARED but
+ * does not resolve to a real commit (`commitResolved === false`): that makes the
+ * citation `inferred` even though its session link itself resolved. Otherwise the
+ * index-time `metadata.tag` stands (doc-edges precision → 'resolved').
+ */
+export function citationTag(rel: Relationship): 'resolved' | 'inferred' {
+  if (rel.metadata?.tag === 'inferred') return 'inferred';
+  if (
+    rel.type === RelationshipType.EVIDENCED_BY &&
+    rel.metadata?.commit !== undefined &&
+    rel.metadata?.commitResolved === false
+  ) {
+    return 'inferred';
+  }
+  return 'resolved';
+}
+
+/**
  * Resolve evidence-frontmatter signals into EVIDENCED_BY + DOCUMENTED_BY edges.
  * Duplicate (source, target) pairs collapse to one edge.
  */

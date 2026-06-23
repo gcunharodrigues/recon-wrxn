@@ -27,6 +27,7 @@ import { computeDrift, formatDrift } from './drift.js';
 import type { DriftReport } from './drift.js';
 import { appendFreshness } from './freshness.js';
 import type { Freshness } from './freshness.js';
+import { citationTag } from '../analyzers/evidence-edges.js';
 
 // ─── Helpers ───────────────────────────────────────────────────
 
@@ -99,15 +100,33 @@ function refFromRel(
   graph: KnowledgeGraph,
   rel: Relationship,
   side: 'source' | 'target',
-): { name: string; file: string; line: number; edgeType: string } {
+): { name: string; file: string; line: number; edgeType: string; confidence: number; tag?: 'resolved' | 'inferred'; commit?: string } {
   const id = side === 'source' ? rel.sourceId : rel.targetId;
   const node = graph.getNode(id);
+  const isCitation =
+    rel.type === RelationshipType.EVIDENCED_BY || rel.type === RelationshipType.DOCUMENTED_BY;
   return {
     name: node?.name || id,
     file: node?.file || '',
     line: node?.startLine || 0,
     edgeType: rel.type,
+    // AC3 (#20): this ref-rendering path used to DROP confidence + the citation
+    // tag. Extract both so callers can surface them. `tag` is set only for citation
+    // edges (resolved/inferred); the commit watermark rides an EVIDENCED_BY edge.
+    confidence: rel.confidence,
+    ...(isCitation ? { tag: citationTag(rel) } : {}),
+    ...(rel.metadata?.commit ? { commit: rel.metadata.commit } : {}),
   };
+}
+
+/**
+ * Render a citation ref (EVIDENCED_BY / DOCUMENTED_BY) as a markdown line carrying
+ * its resolved/inferred tag and, for an EVIDENCED_BY edge, the commit watermark (R3, #20).
+ */
+function citationLine(ref: ReturnType<typeof refFromRel>): string {
+  const commit = ref.commit ? `, commit ${ref.commit}` : '';
+  const tag = ref.tag ? ` (${ref.tag}${commit})` : '';
+  return `- ${ref.name} -- \`${ref.file}:${ref.line}\` [${ref.edgeType}]${tag}`;
 }
 
 function isTestFile(file: string): boolean {
@@ -542,28 +561,63 @@ function handleExplain(
     lines.push('');
   }
 
+  // Verified-only view (citation-recon R3, #20): `verified: true` drops citation
+  // edges whose effective tag is `inferred` (an unresolved commit watermark),
+  // leaving only the fact-resolvable provenance. A read-only projection — it never
+  // touches the graph. Default (absent/false) shows resolved AND inferred.
+  const verifiedOnly = args?.verified === true;
+  const keepVerified = (refs: ReturnType<typeof refFromRel>[]): ReturnType<typeof refFromRel>[] =>
+    verifiedOnly ? refs.filter(r => r.tag !== 'inferred') : refs;
+
   // Prose ↔ code documentation (recon-prose-analyzer-06). DOCUMENTED_BY is
   // directed Prose → Code, so a Page reads its OUTGOING edges (the code it
   // documents) and a code symbol reads its INCOMING edges (the documenting
   // pages). Shown only when present, to avoid noise on the code-symbol majority.
-  const documents = outgoing
+  const documents = keepVerified(outgoing
     .filter(r => r.type === RelationshipType.DOCUMENTED_BY)
-    .map(r => refFromRel(graph, r, 'target'));
+    .map(r => refFromRel(graph, r, 'target')));
   if (documents.length > 0) {
     lines.push(`### Documents (${documents.length})`);
     for (const ref of documents) {
-      lines.push(`- ${ref.name} -- \`${ref.file}:${ref.line}\` [${ref.edgeType}]`);
+      lines.push(citationLine(ref));
     }
     lines.push('');
   }
 
-  const documentedBy = incoming
+  const documentedBy = keepVerified(incoming
     .filter(r => r.type === RelationshipType.DOCUMENTED_BY)
-    .map(r => refFromRel(graph, r, 'source'));
+    .map(r => refFromRel(graph, r, 'source')));
   if (documentedBy.length > 0) {
     lines.push(`### Documented By (${documentedBy.length})`);
     for (const ref of documentedBy) {
-      lines.push(`- ${ref.name} -- \`${ref.file}:${ref.line}\` [${ref.edgeType}]`);
+      lines.push(citationLine(ref));
+    }
+    lines.push('');
+  }
+
+  // Evidence provenance (citation-recon R3, #20). EVIDENCED_BY is directed
+  // Page → SessionEvent, so a Page reads its OUTGOING edges (the session events
+  // that evidence it) and a SessionEvent reads its INCOMING edges (the pages it
+  // is evidence for). Each line carries the resolved/inferred tag (+ the commit
+  // watermark when present); shown only when present to avoid code-symbol noise.
+  const evidencedBy = keepVerified(outgoing
+    .filter(r => r.type === RelationshipType.EVIDENCED_BY)
+    .map(r => refFromRel(graph, r, 'target')));
+  if (evidencedBy.length > 0) {
+    lines.push(`### Evidenced By (${evidencedBy.length})`);
+    for (const ref of evidencedBy) {
+      lines.push(citationLine(ref));
+    }
+    lines.push('');
+  }
+
+  const evidenceFor = keepVerified(incoming
+    .filter(r => r.type === RelationshipType.EVIDENCED_BY)
+    .map(r => refFromRel(graph, r, 'source')));
+  if (evidenceFor.length > 0) {
+    lines.push(`### Evidence For (${evidenceFor.length})`);
+    for (const ref of evidenceFor) {
+      lines.push(citationLine(ref));
     }
     lines.push('');
   }
@@ -618,7 +672,9 @@ function handleExplain(
 /** A structured recon_explain neighbor — what `wrxn brain query --neighbors` renders. */
 export type NeighborRelationship =
   | 'caller' | 'callee' | 'import' | 'importedBy'
-  | 'method' | 'implementedBy' | 'usedBy' | 'testRef';
+  | 'method' | 'implementedBy' | 'usedBy' | 'testRef'
+  // citation provenance (citation-recon R3, #20): the prose↔code/session edges.
+  | 'documents' | 'documentedBy' | 'evidencedBy' | 'evidenceFor';
 
 export interface NeighborHit {
   name: string;
@@ -626,6 +682,11 @@ export interface NeighborHit {
   file: string;
   line: number;
   relationship: NeighborRelationship;
+  // Citation edges only (EVIDENCED_BY / DOCUMENTED_BY) — R3 (#20): the structured
+  // mirror of the human tag/confidence the ref-rendering path now surfaces.
+  tag?: 'resolved' | 'inferred';
+  commit?: string;
+  confidence?: number;
 }
 
 function neighborsFromRels(
@@ -637,12 +698,18 @@ function neighborsFromRels(
   return rels.map((r) => {
     const id = side === 'source' ? r.sourceId : r.targetId;
     const n = graph.getNode(id);
+    const isCitation =
+      r.type === RelationshipType.EVIDENCED_BY || r.type === RelationshipType.DOCUMENTED_BY;
     return {
       name: n?.name ?? id,
       type: n?.type ?? NodeType.Function,
       file: n?.file ?? '',
       line: n?.startLine ?? 0,
       relationship,
+      // Carry tag/confidence (+ the EVIDENCED_BY commit watermark) only on citation
+      // edges, so the 8 code categories stay byte-identical to before.
+      ...(isCitation ? { tag: citationTag(r), confidence: r.confidence } : {}),
+      ...(r.metadata?.commit ? { commit: r.metadata.commit } : {}),
     };
   });
 }
@@ -653,12 +720,12 @@ function neighborsFromRels(
  * toFindHits: a SEPARATE projection of the same graph traversal, so the markdown the
  * stdio path emits stays untouched (recon-brain-recall-review #5).
  */
-function collectNeighbors(graph: KnowledgeGraph, node: Node): NeighborHit[] {
+function collectNeighbors(graph: KnowledgeGraph, node: Node, verifiedOnly = false): NeighborHit[] {
   const incoming = graph.getIncoming(node.id);
   const outgoing = graph.getOutgoing(node.id);
   const isCall = (t: RelationshipType) =>
     t === RelationshipType.CALLS || t === RelationshipType.CALLS_API;
-  return [
+  const all: NeighborHit[] = [
     ...neighborsFromRels(graph, incoming.filter(r => isCall(r.type)), 'source', 'caller'),
     ...neighborsFromRels(graph, outgoing.filter(r => isCall(r.type)), 'target', 'callee'),
     ...neighborsFromRels(graph, outgoing.filter(r => r.type === RelationshipType.IMPORTS), 'target', 'import'),
@@ -670,7 +737,18 @@ function collectNeighbors(graph: KnowledgeGraph, node: Node): NeighborHit[] {
       const src = graph.getNode(r.sourceId);
       return Boolean(src && src.isTest);
     }), 'source', 'testRef'),
+    // Citation provenance (R3, #20) — the SAME edges + tags handleExplain renders:
+    // Documents/Evidenced By read a Page's outgoing edges; Documented By/Evidence For
+    // read a code/session node's incoming edges.
+    ...neighborsFromRels(graph, outgoing.filter(r => r.type === RelationshipType.DOCUMENTED_BY), 'target', 'documents'),
+    ...neighborsFromRels(graph, incoming.filter(r => r.type === RelationshipType.DOCUMENTED_BY), 'source', 'documentedBy'),
+    ...neighborsFromRels(graph, outgoing.filter(r => r.type === RelationshipType.EVIDENCED_BY), 'target', 'evidencedBy'),
+    ...neighborsFromRels(graph, incoming.filter(r => r.type === RelationshipType.EVIDENCED_BY), 'source', 'evidenceFor'),
   ];
+  // Verified-only view (R3, #20): only citation neighbors carry a tag, so dropping
+  // `inferred` leaves every code neighbor (untagged) untouched — the structured
+  // mirror of handleExplain's keepVerified filter.
+  return verifiedOnly ? all.filter(n => n.tag !== 'inferred') : all;
 }
 
 /**
@@ -696,7 +774,7 @@ export function explainStructured(
   if (!name) return { result, neighbors: [] };
   const resolved = resolveSymbol(graph, name, a?.file as string);
   if (resolved.error) return { result, neighbors: [] };
-  return { result, neighbors: collectNeighbors(graph, resolved.node!) };
+  return { result, neighbors: collectNeighbors(graph, resolved.node!, a?.verified === true) };
 }
 
 // ─── recon_impact ─────────────────────────────────────────────
