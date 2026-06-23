@@ -19,6 +19,7 @@ import { extractFromFile } from '../analyzers/tree-sitter/extractor.js';
 import { getLanguageForFile, isLanguageAvailable } from '../analyzers/tree-sitter/parser.js';
 import { analyzeMarkdown } from '../analyzers/markdown.js';
 import { resolveDocEdges, RELINK_CONFIDENCE } from '../analyzers/doc-edges.js';
+import { resolveEvidenceEdges } from '../analyzers/evidence-edges.js';
 import { loadReinforceSidecar, applyRecency } from '../analyzers/prose-signals.js';
 import { analyzeSource, BINARY_SOURCE_EXTENSIONS, SOURCE_EXTENSIONS } from '../analyzers/source.js';
 import type { SourceFile } from '../analyzers/source.js';
@@ -678,6 +679,16 @@ export class ReconWatcher {
       // graph regenerates them cleanly (add/change only — the unlink path skips
       // this block, which is correct: a deleted page documents nothing).
       for (const edge of resolveDocEdges(this.graph, result.citations)) {
+        this.graph.addRelationship(edge);
+      }
+      // Regenerate evidence-frontmatter edges (citation-recon R2, #22) for THIS
+      // page's evidence:{session,commit,symbols} block — the same posture as the
+      // doc edges above and AFTER them, mirroring commands.ts ingestProse: without
+      // this a live `.md` edit re-adds the Page but drops its EVIDENCED_BY/
+      // DOCUMENTED_BY evidence edges until the next full re-index. Resolves against
+      // the SessionEvent + code nodes already live in the graph. Fail-soft: absent/
+      // unresolvable evidence adds no edge, never throws.
+      for (const edge of resolveEvidenceEdges(this.graph, result.evidence)) {
         this.graph.addRelationship(edge);
       }
       freshSearchText = result.searchText;
