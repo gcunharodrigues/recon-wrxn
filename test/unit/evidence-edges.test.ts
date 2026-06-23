@@ -143,6 +143,44 @@ describe('resolveEvidenceEdges — evidence.commit watermark', () => {
   });
 });
 
+// ─── FOLD (R3, #20): commitResolved reflects REAL git history, not just sha shape ──
+//
+// R2 set commitResolved on SYNTACTIC sha shape alone, which OVERCLAIMS `resolved`
+// for a well-formed-but-nonexistent sha. The resolver now accepts an INJECTED
+// commitExists(sha) checker (the index call site has git): a sha is resolved only
+// when it is both well-formed AND actually present in history. With no checker (or
+// outside a repo) it falls back to syntactic validity — fail-soft, no IO dependency.
+describe('resolveEvidenceEdges — commitResolved reflects real git history (injected checker)', () => {
+  it('a well-formed sha that EXISTS in history → commitResolved true', () => {
+    const [e] = resolveEvidenceEdges(buildGraph(),
+      [sig({ session: 'sess-1', commit: '5615acb' })], (sha) => sha === '5615acb');
+    expect(e.metadata?.commitResolved).toBe(true);
+  });
+
+  it('a well-formed sha that does NOT exist → commitResolved false (no longer overclaims resolved)', () => {
+    const [e] = resolveEvidenceEdges(buildGraph(),
+      [sig({ session: 'sess-1', commit: 'abcdef0' })], () => false);
+    expect(e.metadata?.commit).toBe('abcdef0');   // still carried — fail-soft, stays visible
+    expect(e.metadata?.commitResolved).toBe(false);
+  });
+
+  it('a malformed sha is rejected syntactically and never reaches the checker', () => {
+    const calls: string[] = [];
+    const [e] = resolveEvidenceEdges(buildGraph(),
+      [sig({ session: 'sess-1', commit: 'not-a-sha!' })],
+      (sha) => { calls.push(sha); return true; });
+    expect(e.metadata?.commitResolved).toBe(false);
+    expect(calls).toEqual([]); // the syntactic gate short-circuits — garbage never shells out to git
+  });
+
+  it('with NO injected checker, falls back to syntactic validity (fail-soft, R2 behavior unchanged)', () => {
+    const [valid] = resolveEvidenceEdges(buildGraph(), [sig({ session: 'sess-1', commit: '5615acb' })]);
+    expect(valid.metadata?.commitResolved).toBe(true);
+    const [bad] = resolveEvidenceEdges(buildGraph(), [sig({ session: 'sess-1', commit: 'xyz' })]);
+    expect(bad.metadata?.commitResolved).toBe(false);
+  });
+});
+
 // ─── Fail-soft, idempotent, never throws (the AC robustness clause) ──
 
 describe('resolveEvidenceEdges — fail-soft, idempotent, robust', () => {

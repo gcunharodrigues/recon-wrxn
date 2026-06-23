@@ -33,6 +33,7 @@ import type { AnalyzerWarning } from '../analyzers/types.js';
 import { analyzeSource, findSourceFiles } from '../analyzers/source.js';
 import { resolveDocEdges } from '../analyzers/doc-edges.js';
 import { resolveEvidenceEdges } from '../analyzers/evidence-edges.js';
+import { makeCommitExists } from '../analyzers/commit-check.js';
 import { getAvailableLanguages } from '../analyzers/tree-sitter/index.js';
 import { carryOverUnchangedTreeSitter, pruneDegenerateHashes, shouldReactiveHeal, serveNeedsReindex } from '../analyzers/tree-sitter/carryover.js';
 import { detectCommunities } from '../graph/community.js';
@@ -147,7 +148,7 @@ async function ingestProse(
   // edges, each tagged resolved/inferred. Added AFTER doc edges so an evidence-derived
   // DOCUMENTED_BY (carrying metadata.tag) wins on id-collision with the same plain
   // derived_from edge. Fail-soft: unresolvable evidence adds no edge, never throws.
-  for (const edge of resolveEvidenceEdges(graph, mdResult.evidence)) {
+  for (const edge of resolveEvidenceEdges(graph, mdResult.evidence, makeCommitExists(walkRoot))) {
     graph.addRelationship(edge);
   }
   await saveSearchText(saveRoot, mdResult.searchText, repoName);

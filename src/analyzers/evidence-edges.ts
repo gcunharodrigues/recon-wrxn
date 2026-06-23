@@ -15,7 +15,8 @@
  *                   is linked to each event of that session. The `evidence.commit`
  *                   sha rides on these edges as a `metadata.commit` watermark
  *                   (there is no commit node), tagged `commitResolved` iff the sha
- *                   is syntactically valid — see SHA_RE.
+ *                   is well-formed (SHA_RE) AND — when the index injects a
+ *                   commitExists checker — actually present in git history (R3 fold).
  *   • DOCUMENTED_BY Page → the code node each `evidence.symbols` entry resolves to.
  *                   These entries are .touched paths/symbols, i.e. exactly the
  *                   `derived_from:` anchor shape, so resolution REUSES resolveDocEdges
@@ -26,9 +27,10 @@
  * Tag (deterministic, index-time): every edge this resolver emits is minted ONLY
  * when its target node provably exists (doc-edges precision discipline → no
  * dangling/heuristic edges), so each carries `metadata.tag = 'resolved'`. The
- * `inferred` band is carried by the commit watermark (`commitResolved: false`):
- * a malformed sha is the one unverified link, KEPT on the edge so the page's
- * commit citation stays visible rather than silently dropped.
+ * `inferred` band is carried by the commit watermark (`commitResolved: false`): a
+ * sha that is malformed, or (with an injected checker) well-formed but absent from
+ * history, is the one unverified link — KEPT on the edge so the page's commit
+ * citation stays visible rather than silently dropped.
  *
  * Fail-soft + idempotent: unresolvable evidence (no matching session/symbol) adds
  * NO edge and NEVER throws; re-running over the same graph + signals yields the
@@ -74,12 +76,27 @@ export function citationTag(rel: Relationship): 'resolved' | 'inferred' {
 }
 
 /**
+ * A commit-existence checker, INJECTED by the index call site (which has git
+ * access — see commands.ts). Given a syntactically valid sha, returns whether that
+ * commit actually EXISTS in the repo's history. Optional: with no checker (or
+ * outside a git repo) the resolver falls back to syntactic validity — fail-soft,
+ * keeping it pure + deterministic in tests and never an IO dependency.
+ */
+export type CommitExists = (sha: string) => boolean;
+
+/**
  * Resolve evidence-frontmatter signals into EVIDENCED_BY + DOCUMENTED_BY edges.
  * Duplicate (source, target) pairs collapse to one edge.
+ *
+ * `commitExists` (R3 fold, #20): when injected, an EVIDENCED_BY commit watermark is
+ * tagged `commitResolved` only when the sha is both well-formed AND present in git
+ * history — closing R2's overclaim, where a well-formed-but-nonexistent sha read as
+ * resolved. Without it, commitResolved falls back to syntactic validity (fail-soft).
  */
 export function resolveEvidenceEdges(
   graph: KnowledgeGraph,
   signals: EvidenceSignal[],
+  commitExists?: CommitExists,
 ): Relationship[] {
   const edges: Relationship[] = [];
   const seen = new Set<string>();
@@ -98,8 +115,10 @@ export function resolveEvidenceEdges(
     const events = eventsBySession.get(sig.session) ?? [];
     // The evidence.commit sha is a watermark on these session edges (no commit
     // node exists). Carried verbatim when declared; commitResolved tags it
-    // resolved iff it is a syntactically valid sha, else inferred (still kept so
-    // the page's commit citation stays visible — fail-soft, never dropped).
+    // resolved iff it is a well-formed sha AND (when a checker is injected) actually
+    // present in git history — else inferred (still kept so the page's commit
+    // citation stays visible — fail-soft, never dropped). The syntactic gate also
+    // short-circuits, so garbage never shells out to git via the checker.
     const commit = sig.commit;
     for (const ev of events) {
       const id = `${sig.sourceId}-EVIDENCED_BY-${ev.id}`;
@@ -108,7 +127,7 @@ export function resolveEvidenceEdges(
       const metadata: Relationship['metadata'] = { tag: 'resolved' };
       if (commit) {
         metadata.commit = commit;
-        metadata.commitResolved = SHA_RE.test(commit);
+        metadata.commitResolved = SHA_RE.test(commit) && (commitExists ? commitExists(commit) : true);
       }
       edges.push({
         id,

@@ -20,6 +20,7 @@ import { getLanguageForFile, isLanguageAvailable } from '../analyzers/tree-sitte
 import { analyzeMarkdown } from '../analyzers/markdown.js';
 import { resolveDocEdges, RELINK_CONFIDENCE } from '../analyzers/doc-edges.js';
 import { resolveEvidenceEdges } from '../analyzers/evidence-edges.js';
+import { makeCommitExists } from '../analyzers/commit-check.js';
 import { loadReinforceSidecar, applyRecency } from '../analyzers/prose-signals.js';
 import { analyzeSource, BINARY_SOURCE_EXTENSIONS, SOURCE_EXTENSIONS } from '../analyzers/source.js';
 import type { SourceFile } from '../analyzers/source.js';
@@ -688,7 +689,7 @@ export class ReconWatcher {
       // DOCUMENTED_BY evidence edges until the next full re-index. Resolves against
       // the SessionEvent + code nodes already live in the graph. Fail-soft: absent/
       // unresolvable evidence adds no edge, never throws.
-      for (const edge of resolveEvidenceEdges(this.graph, result.evidence)) {
+      for (const edge of resolveEvidenceEdges(this.graph, result.evidence, makeCommitExists(walkRoot))) {
         this.graph.addRelationship(edge);
       }
       freshSearchText = result.searchText;
