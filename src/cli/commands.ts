@@ -27,6 +27,7 @@ import { initEmbedder, embedBatch, disposeEmbedder, DEFAULT_CONFIG } from '../se
 import { analyzeTreeSitter, analyzeTreeSitterParallel } from '../analyzers/tree-sitter/index.js';
 import { analyzeMarkdown, findMarkdownFiles } from '../analyzers/markdown.js';
 import type { MarkdownAnalysisResult } from '../analyzers/markdown.js';
+import { analyzeEvents, findEventFiles } from '../analyzers/events.js';
 import { loadReinforceSidecar, applyRecency } from '../analyzers/prose-signals.js';
 import type { AnalyzerWarning } from '../analyzers/types.js';
 import { analyzeSource, findSourceFiles } from '../analyzers/source.js';
@@ -119,6 +120,18 @@ async function ingestProse(
   // Source skips are kept SEPARATE from markdown skips (returned as sourceWarnings)
   // so each caller reports them under a truthful banner — a skipped .json/.yaml is
   // not a "markdown file" (multiformat-distill-09).
+
+  // Session events (citation-recon R1, #18): lift .wrxn/events/*.jsonl into the
+  // graph as SessionEvent nodes, right AFTER prose — mirroring the prose seam.
+  // tree-sitter/markdown/source don't claim .jsonl, so events own it (no double
+  // ingest). The prompt body is kept OFF the node and merged into the searchText
+  // snapshot, exactly like prose; deterministic ids (event:<sid>:<line>) make
+  // re-indexing idempotent. Pure analyzer + its own walker, fail-open when absent.
+  const eventsResult = analyzeEvents(findEventFiles(walkRoot));
+  for (const node of eventsResult.nodes) {
+    graph.addNode(node);
+  }
+  Object.assign(mdResult.searchText, eventsResult.searchText);
 
   // Resolve doc→code DOCUMENTED_BY edges now that BOTH code (tree-sitter +
   // cross-language, added before this call) and the prose nodes above are in the

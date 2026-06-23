@@ -43,6 +43,7 @@ const NODE_COLORS: Record<NodeType, string> = {
   [NodeType.Page]: '#22d3ee',
   [NodeType.Section]: '#67e8f9',
   [NodeType.Source]: '#2dd4bf',
+  [NodeType.SessionEvent]: '#c084fc',
 };
 
 const NODE_EMOJI: Record<NodeType, string> = {
@@ -61,6 +62,7 @@ const NODE_EMOJI: Record<NodeType, string> = {
   [NodeType.Page]: '📖',
   [NodeType.Section]: '§',
   [NodeType.Source]: '🗎',
+  [NodeType.SessionEvent]: '⚡',
 };
 
 // ─── Filter & Subgraph Extraction ───────────────────────────────
