@@ -623,6 +623,14 @@ describe('recon_explain EVIDENCED_BY/DOCUMENTED_BY tag surfacing (citation-recon
     expect(result).toContain('[EVIDENCED_BY]');
     expect(result).toContain('(inferred');
   });
+
+  it('a SessionEvent lists the pages it is Evidence For (incoming EVIDENCED_BY), tagged', async () => {
+    const result = await handleToolCall('recon_explain', { name: 'prompt @ t0' }, graphWithCitations());
+    expect(result).toContain('Evidence For');
+    expect(result).toContain('Auth Evidence Page');
+    expect(result).toContain('[EVIDENCED_BY]');
+    expect(result).toContain('(resolved');
+  });
 });
 
 // ─── verified-only view (citation-recon R3, #20) ──────────────────

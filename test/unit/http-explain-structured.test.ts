@@ -136,4 +136,11 @@ describe('recon_explain structured citation neighbors (citation-recon R3, #20)',
     expect(neighbors.some(n => n.relationship === 'evidencedBy')).toBe(false); // inferred → dropped
     expect(neighbors.some(n => n.relationship === 'documents')).toBe(true);    // resolved → kept
   });
+
+  it('a SessionEvent surfaces evidenceFor neighbors (incoming EVIDENCED_BY), tagged', () => {
+    const { neighbors } = explainStructured({ name: 'prompt @ t0' }, citationGraph());
+    expect(neighbors.find(n => n.relationship === 'evidenceFor')).toMatchObject({
+      name: 'Auth Evidence Page', relationship: 'evidenceFor', tag: 'resolved',
+    });
+  });
 });
