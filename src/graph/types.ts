@@ -51,6 +51,7 @@ export enum RelationshipType {
   EXTENDS = 'EXTENDS',        // Class → Class (inheritance)
   USES_TYPE = 'USES_TYPE',    // Function/Component → Type (generic type argument usage)
   DOCUMENTED_BY = 'DOCUMENTED_BY', // Prose (Page/Section) → CodeSymbol (resolution deferred to a later slice)
+  EVIDENCED_BY = 'EVIDENCED_BY', // Page → SessionEvent: kernel evidence-frontmatter provenance (citation-recon R2, #19)
 }
 
 export enum Language {
@@ -140,6 +141,10 @@ export interface Relationship {
   metadata?: {
     httpMethod?: string;   // For CALLS_API
     urlPattern?: string;   // For CALLS_API
+    // citation-recon R2 (#19) — evidence-edge resolution, stamped at index time:
+    tag?: 'resolved' | 'inferred'; // resolved = target node provably exists; inferred = heuristic/unverified link
+    commit?: string;        // EVIDENCED_BY: the evidence.commit sha watermark (no commit node exists, so it rides here)
+    commitResolved?: boolean; // EVIDENCED_BY: true iff `commit` is a syntactically valid sha (resolved); false = inferred
   };
 }
 

@@ -32,6 +32,7 @@ import { loadReinforceSidecar, applyRecency } from '../analyzers/prose-signals.j
 import type { AnalyzerWarning } from '../analyzers/types.js';
 import { analyzeSource, findSourceFiles } from '../analyzers/source.js';
 import { resolveDocEdges } from '../analyzers/doc-edges.js';
+import { resolveEvidenceEdges } from '../analyzers/evidence-edges.js';
 import { getAvailableLanguages } from '../analyzers/tree-sitter/index.js';
 import { carryOverUnchangedTreeSitter, pruneDegenerateHashes, shouldReactiveHeal, serveNeedsReindex } from '../analyzers/tree-sitter/carryover.js';
 import { detectCommunities } from '../graph/community.js';
@@ -137,6 +138,16 @@ async function ingestProse(
   // cross-language, added before this call) and the prose nodes above are in the
   // graph (recon-prose-analyzer-06). Unresolvable signals add no edge.
   for (const edge of resolveDocEdges(graph, mdResult.citations)) {
+    graph.addRelationship(edge);
+  }
+  // Resolve evidence-frontmatter edges (citation-recon R2, #19): now that code,
+  // prose AND R1's SessionEvent nodes are all in the graph, turn each page's frozen
+  // evidence:{session,commit,symbols} block into EVIDENCED_BY (page→SessionEvent,
+  // commit watermark) + DOCUMENTED_BY (page→symbol, reusing doc-edges' resolution)
+  // edges, each tagged resolved/inferred. Added AFTER doc edges so an evidence-derived
+  // DOCUMENTED_BY (carrying metadata.tag) wins on id-collision with the same plain
+  // derived_from edge. Fail-soft: unresolvable evidence adds no edge, never throws.
+  for (const edge of resolveEvidenceEdges(graph, mdResult.evidence)) {
     graph.addRelationship(edge);
   }
   await saveSearchText(saveRoot, mdResult.searchText, repoName);

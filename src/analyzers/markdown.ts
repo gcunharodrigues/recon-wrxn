@@ -58,6 +58,23 @@ export interface DocCitation {
   kind: 'anchor' | 'citation';
 }
 
+/**
+ * The kernel's FROZEN evidence-frontmatter contract (wrxn-kernel #33), harvested
+ * RAW from a page's `evidence:{ session, commit, symbols }` block, NOT yet resolved
+ * to graph nodes. Mirrors DocCitation: resolution (sid → SessionEvent, symbol →
+ * code node) happens in the evidence resolver — see evidence-edges.ts.
+ */
+export interface EvidenceSignal {
+  /** The Page node that declared the evidence block. */
+  sourceId: string;
+  /** evidence.session — matched against SessionEvent.package (R1 carries the sid there). */
+  session?: string;
+  /** evidence.commit — a git sha watermark (there is no commit node; it rides on the edge). */
+  commit?: string;
+  /** evidence.symbols — .touched paths/symbols, resolved like derived_from anchors. */
+  symbols: string[];
+}
+
 export interface MarkdownAnalysisResult {
   nodes: Node[];
   relationships: Relationship[];
@@ -71,6 +88,13 @@ export interface MarkdownAnalysisResult {
    * from every page, for the edge resolver to turn into DOCUMENTED_BY edges.
    */
   citations: DocCitation[];
+  /**
+   * Per-page kernel evidence-frontmatter signals (citation-recon R2, #19): the
+   * frozen `evidence:{ session, commit, symbols }` block harvested RAW, for the
+   * evidence resolver to turn into EVIDENCED_BY + DOCUMENTED_BY edges. Mirrors
+   * `citations` — raw signals, resolved later against the graph.
+   */
+  evidence: EvidenceSignal[];
   /**
    * Files whose analysis threw (e.g. a pathological construct overflowing the
    * mdast parser) and were SKIPPED. Mirrors the tree-sitter analyzer's
@@ -246,6 +270,75 @@ function parseImportance(yaml: string): number | undefined {
   return clampImportance(cleanScalar(lines[idx].replace(/^importance\s*:/, '')));
 }
 
+const indentOf = (line: string): number => (line.match(/^\s*/)?.[0].length ?? 0);
+
+/** Parse an inline-flow `{ session: x, commit: y, symbols: [a, b] }` evidence value. */
+function parseInlineEvidence(head: string): { session?: string; commit?: string; symbols: string[] } {
+  const out: { session?: string; commit?: string; symbols: string[] } = { symbols: [] };
+  const inner = head.slice(1, -1); // strip the surrounding { }
+  const symM = inner.match(/symbols\s*:\s*\[([^\]]*)\]/);
+  if (symM) for (const part of symM[1].split(',')) { const v = cleanScalar(part); if (v) out.symbols.push(v); }
+  const sessM = inner.match(/session\s*:\s*([^,}\]]+)/);
+  if (sessM) { const v = cleanScalar(sessM[1]); if (v) out.session = v; }
+  const comM = inner.match(/commit\s*:\s*([^,}\]]+)/);
+  if (comM) { const v = cleanScalar(comM[1]); if (v) out.commit = v; }
+  return out;
+}
+
+/**
+ * Extract the kernel's FROZEN `evidence:{ session, commit, symbols }` block from
+ * raw YAML frontmatter (no YAML dep), mirroring parseDerivedFrom. Supports the
+ * block-mapping and inline-flow forms:
+ *   evidence:
+ *     session: <sid>
+ *     commit: <sha>
+ *     symbols: [src/a.ts, src/b.ts#sym]   # or a `- item` block sequence
+ *   evidence: { session: <sid>, commit: <sha>, symbols: [src/a.ts] }
+ * Returns undefined when no `evidence:` key is present; absent inner fields →
+ * undefined / []. Resolution (sid → SessionEvent, symbol → code node) happens in
+ * the evidence resolver. No throw — a malformed block degrades to whatever parsed.
+ */
+function parseEvidence(yaml: string): { session?: string; commit?: string; symbols: string[] } | undefined {
+  const lines = yaml.split('\n');
+  const idx = lines.findIndex((l) => /^evidence\s*:/.test(l));
+  if (idx === -1) return undefined;
+
+  const head = cleanScalar(lines[idx].replace(/^evidence\s*:/, ''));
+  if (head.startsWith('{') && head.endsWith('}')) return parseInlineEvidence(head);
+
+  const out: { session?: string; commit?: string; symbols: string[] } = { symbols: [] };
+  const baseIndent = indentOf(lines[idx]);
+  let inSymbolsSeq = false;
+  for (let i = idx + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    if (indentOf(line) <= baseIndent) break; // dedent → out of the evidence block
+
+    if (inSymbolsSeq) {
+      const m = line.match(/^\s*-\s*(.+)$/);
+      if (m) { const v = cleanScalar(m[1]); if (v) out.symbols.push(v); continue; }
+      inSymbolsSeq = false; // a non-sequence line ends the block sequence — fall through to key parse
+    }
+
+    const kv = line.match(/^\s*([A-Za-z_]+)\s*:(.*)$/);
+    if (!kv) continue;
+    const key = kv[1];
+    const val = cleanScalar(kv[2]);
+    if (key === 'session') out.session = val || undefined;
+    else if (key === 'commit') out.commit = val || undefined;
+    else if (key === 'symbols') {
+      if (val.startsWith('[') && val.endsWith(']')) {
+        for (const part of val.slice(1, -1).split(',')) { const v = cleanScalar(part); if (v) out.symbols.push(v); }
+      } else if (val) {
+        out.symbols.push(val);
+      } else {
+        inSymbolsSeq = true; // a block sequence of `- item` lines follows
+      }
+    }
+  }
+  return out;
+}
+
 /**
  * `file.ext:line` citations in prose body. Liberal by design: extraction casts a
  * wide net; precision is enforced later, where the edge resolver drops any
@@ -313,6 +406,13 @@ function analyzeFile(file: MarkdownFile, out: MarkdownAnalysisResult): void {
       if (imp !== undefined) importance = imp;
       for (const ref of parseDerivedFrom(child.value)) {
         out.citations.push({ sourceId: pageId, ref, kind: 'anchor' });
+      }
+      // Kernel evidence frontmatter (citation-recon R2, #19): harvest the frozen
+      // evidence:{session,commit,symbols} block raw — resolved later by the
+      // evidence resolver, exactly as derived_from anchors are by doc-edges.
+      const ev = parseEvidence(child.value);
+      if (ev) {
+        out.evidence.push({ sourceId: pageId, session: ev.session, commit: ev.commit, symbols: ev.symbols });
       }
       continue;
     }
@@ -399,7 +499,7 @@ function analyzeFile(file: MarkdownFile, out: MarkdownAnalysisResult): void {
  * Pure: depends only on the given file contents (the walker is separate).
  */
 export function analyzeMarkdown(files: MarkdownFile[]): MarkdownAnalysisResult {
-  const out: MarkdownAnalysisResult = { nodes: [], relationships: [], searchText: {}, citations: [], warnings: [] };
+  const out: MarkdownAnalysisResult = { nodes: [], relationships: [], searchText: {}, citations: [], evidence: [], warnings: [] };
   for (const file of files) {
     // Isolate each file: a throw (e.g. RangeError from a pathological construct
     // the mdast parser can't handle) records a warning and SKIPS that file
