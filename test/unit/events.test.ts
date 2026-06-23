@@ -12,7 +12,7 @@
  *
  * Temp-dir style mirrors markdown-index.test.ts / markdown-index-project.test.ts.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -40,7 +40,7 @@ describe('analyzeEvents — prompt records', () => {
     expect(node.exported).toBe(false);
 
     // Body (prompt text) is OFF the serialized node, in the searchText snapshot.
-    expect((node as Record<string, unknown>).text).toBeUndefined();
+    expect((node as unknown as Record<string, unknown>).text).toBeUndefined();
     expect(result.searchText[node.id]).toContain('refactor the auth flow');
 
     // R1 emits no event edges.
@@ -118,6 +118,34 @@ describe('analyzeEvents — deterministic node ids', () => {
   });
 });
 
+// ─── analyzeEvents: file-derived ids (tamper hardening) ──────────
+
+describe('analyzeEvents — file-derived node ids (no cross-file collision)', () => {
+  it('keeps ids unique across two files carrying the SAME foreign sid', () => {
+    const foreign = 'sess-foreign';
+    const rec = (text: string) => JSON.stringify({ ts: 't', sid: foreign, kind: 'prompt', text });
+    const fileA = { path: '.wrxn/events/aaa.jsonl', content: rec('from A') + '\n' };
+    const fileB = { path: '.wrxn/events/bbb.jsonl', content: rec('from B') + '\n' };
+
+    const ids = analyzeEvents([fileA, fileB]).nodes.map((n) => n.id);
+    // The id is derived from the source FILE (basename), not the record's sid, so
+    // a tampered file reusing a foreign sid cannot shadow another file's node.
+    expect(new Set(ids).size).toBe(2);
+    expect(ids).toEqual(['event:aaa:0', 'event:bbb:0']);
+  });
+
+  it('is idempotent: re-indexing the same file yields the same file-derived ids', () => {
+    const file = {
+      path: '.wrxn/events/ccc.jsonl',
+      content: JSON.stringify({ ts: 't', sid: 'whatever', kind: 'prompt', text: 'x' }) + '\n',
+    };
+    const first = analyzeEvents([file]);
+    const second = analyzeEvents([file]);
+    expect(first.nodes.map((n) => n.id)).toEqual(second.nodes.map((n) => n.id));
+    expect(first.nodes[0].id).toBe('event:ccc:0');
+  });
+});
+
 // ─── findEventFiles: the injected IO walker ──────────────────────
 
 describe('findEventFiles', () => {
@@ -144,6 +172,37 @@ describe('findEventFiles', () => {
     const root = mkdtempSync(join(tmpdir(), 'recon-ev-empty-'));
     try {
       expect(findEventFiles(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // ── maxFileSize cap (F1, #21): the OOM escape hatch the prose/source siblings
+  // already honor (markdown.ts / source.ts: statSync().size > cap → continue).
+  it('skips a .jsonl over maxFileSize when the install configures one, keeps smaller ones', () => {
+    const root = mkdtempSync(join(tmpdir(), 'recon-ev-cap-'));
+    try {
+      mkdirSync(join(root, '.wrxn', 'events'), { recursive: true });
+      const big = '{"ts":"t","sid":"big","kind":"prompt","text":"' + 'x'.repeat(2000) + '"}\n';
+      writeFileSync(join(root, '.wrxn', 'events', 'big.jsonl'), big);
+      writeFileSync(join(root, '.wrxn', 'events', 'small.jsonl'), '{"ts":"t","sid":"small","kind":"prompt","text":"hi"}\n');
+
+      const paths = findEventFiles(root, 500).map((f) => f.path);
+      // Over-cap file is skipped via statSync BEFORE the whole-file read (no OOM).
+      expect(paths).not.toContain('.wrxn/events/big.jsonl');
+      expect(paths).toContain('.wrxn/events/small.jsonl');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('indexes a large .jsonl by default (no cap → unlimited)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'recon-ev-nocap-'));
+    try {
+      mkdirSync(join(root, '.wrxn', 'events'), { recursive: true });
+      const big = '{"ts":"t","sid":"big","kind":"prompt","text":"' + 'x'.repeat(2000) + '"}\n';
+      writeFileSync(join(root, '.wrxn', 'events', 'big.jsonl'), big);
+      expect(findEventFiles(root).map((f) => f.path)).toContain('.wrxn/events/big.jsonl');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

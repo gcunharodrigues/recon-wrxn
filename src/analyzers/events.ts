@@ -12,15 +12,19 @@
  * `kind ∈ { prompt, tool }` — a `prompt` record carries `text`, a `tool` record
  * carries `tool` + `target`. No fields are invented beyond this contract.
  *
- * Emits one SessionEvent node per valid record — id `event:<sid>:<line>` (the
- * line index disambiguates and is deterministic, so re-indexing the same file
- * yields the same ids → idempotent). The prompt body is kept OFF the serialized
+ * Emits one SessionEvent node per valid record — id `event:<file>:<line>` (file =
+ * the source basename with its extension stripped; the line index disambiguates
+ * and is deterministic, so re-indexing the same file yields the same ids →
+ * idempotent). Basing the id on the FILE rather than the record's `sid` keeps ids
+ * unique per source file even if a tampered file carries a foreign `sid` (in
+ * normal operation — one sid per events/<sid>.jsonl — the basename equals the sid,
+ * so ids are unchanged). The prompt body is kept OFF the serialized
  * node and returned in `searchText` (the BM25 input), exactly as a prose body is.
  * A malformed / non-JSON / off-contract line is skipped; analysis never throws.
  */
 
-import { readdirSync, readFileSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { basename, extname, join, relative } from 'node:path';
 import { NodeType, Language } from '../graph/types.js';
 import type { Node, Relationship } from '../graph/types.js';
 import type { AnalyzerWarning } from './types.js';
@@ -57,8 +61,12 @@ export interface EventAnalysisResult {
  * [] when the dir is absent (fail-open: a project without session telemetry just
  * ingests nothing). The IO half of the analyzer, kept separate so analyzeEvents
  * stays pure (mirrors findMarkdownFiles ↔ analyzeMarkdown).
+ *
+ * `maxFileSize` (bytes) is the OPTIONAL OOM escape hatch threaded from ingestProse,
+ * identical to the prose/source walkers: a file strictly larger is skipped via
+ * statSync BEFORE the whole-file read. DEFAULTS to Infinity = no cap.
  */
-export function findEventFiles(rootDir: string): EventFile[] {
+export function findEventFiles(rootDir: string, maxFileSize: number = Infinity): EventFile[] {
   const dir = join(rootDir, '.wrxn', 'events');
   let entries;
   try {
@@ -72,6 +80,15 @@ export function findEventFiles(rootDir: string): EventFile[] {
   for (const entry of [...entries].sort((a, b) => a.name.localeCompare(b.name))) {
     if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.jsonl')) continue;
     const abs = join(dir, entry.name);
+    // Only stat when a finite cap is configured — the default (unlimited) path
+    // skips the extra syscall and never excludes a file by size.
+    if (Number.isFinite(maxFileSize)) {
+      try {
+        if (statSync(abs).size > maxFileSize) continue;
+      } catch {
+        continue;
+      }
+    }
     let content: string;
     try {
       content = readFileSync(abs, 'utf-8');
@@ -86,6 +103,11 @@ export function findEventFiles(rootDir: string): EventFile[] {
 // ─── Analyzer ────────────────────────────────────────────────────
 
 function analyzeEventFile(file: EventFile, out: EventAnalysisResult): void {
+  // Node ids are keyed on the SOURCE FILE (basename, ext stripped), not the
+  // record's sid: filenames are unique within the flat .wrxn/events dir, so this
+  // is unique-per-file AND deterministic — a tampered file reusing a foreign sid
+  // can't collide ids across files (addNode would otherwise shadow).
+  const fileKey = basename(file.path, extname(file.path));
   const lines = file.content.split('\n');
   lines.forEach((raw, i) => {
     const line = raw.trim();
@@ -109,7 +131,7 @@ function analyzeEventFile(file: EventFile, out: EventAnalysisResult): void {
     if (!sid) return; // contract requires sid → skip
     const ts = rec.ts === undefined || rec.ts === null ? undefined : String(rec.ts);
 
-    const id = `event:${sid}:${i}`;
+    const id = `event:${fileKey}:${i}`;
     const node: Node = {
       id,
       type: NodeType.SessionEvent,

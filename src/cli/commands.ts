@@ -125,9 +125,9 @@ async function ingestProse(
   // graph as SessionEvent nodes, right AFTER prose — mirroring the prose seam.
   // tree-sitter/markdown/source don't claim .jsonl, so events own it (no double
   // ingest). The prompt body is kept OFF the node and merged into the searchText
-  // snapshot, exactly like prose; deterministic ids (event:<sid>:<line>) make
+  // snapshot, exactly like prose; deterministic ids (event:<file>:<line>) make
   // re-indexing idempotent. Pure analyzer + its own walker, fail-open when absent.
-  const eventsResult = analyzeEvents(findEventFiles(walkRoot));
+  const eventsResult = analyzeEvents(findEventFiles(walkRoot, maxFileSize));
   for (const node of eventsResult.nodes) {
     graph.addNode(node);
   }
