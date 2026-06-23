@@ -18,6 +18,7 @@ import { KnowledgeGraph } from '../../src/graph/graph.js';
 import { NodeType, RelationshipType, Language } from '../../src/graph/types.js';
 import type { Node, Relationship } from '../../src/graph/types.js';
 import { handleToolCall } from '../../src/mcp/handlers.js';
+import { RECON_TOOLS } from '../../src/mcp/tools.js';
 import { ANCHOR_CONFIDENCE } from '../../src/analyzers/doc-edges.js';
 
 // ─── Mock Graph Builder ─────────────────────────────────────────
@@ -577,6 +578,112 @@ describe('recon_explain DOCUMENTED_BY traversal', () => {
       name: 'DecodeJWT',
     }, graphWithDocEdge());
     expect(result).not.toContain('Documented By');
+  });
+});
+
+// ─── citation tag surfacing on recon_explain (citation-recon R3, #20) ──
+
+describe('recon_explain EVIDENCED_BY/DOCUMENTED_BY tag surfacing (citation-recon R3, #20)', () => {
+  const PAGE = 'md:page:.wrxn/wiki/concepts/auth.md';
+
+  // A Page that cites a session (EVIDENCED_BY → SessionEvent) and a code symbol
+  // (DOCUMENTED_BY → code). The EVIDENCED_BY metadata mirrors R2: tag='resolved'
+  // (the event provably exists) + an optional commit watermark whose commitResolved
+  // band is the inferred dimension.
+  function graphWithCitations(over?: Partial<Relationship['metadata']>): KnowledgeGraph {
+    const g = buildMockGraph();
+    g.addNode(makeNode(PAGE, 'Auth Evidence Page', {
+      type: NodeType.Page, file: '.wrxn/wiki/concepts/auth.md',
+      language: Language.Markdown, package: '.wrxn/wiki/concepts', exported: false,
+    }));
+    g.addNode(makeNode('event:sess-1:0', 'prompt @ t0', {
+      type: NodeType.SessionEvent, file: '.wrxn/events/sess-1.jsonl',
+      startLine: 1, endLine: 1, language: Language.Json, package: 'sess-1', exported: false,
+    }));
+    g.addRelationship(makeRel(PAGE, 'event:sess-1:0', RelationshipType.EVIDENCED_BY, {
+      tag: 'resolved', commit: '5615acb', commitResolved: true, ...over,
+    }));
+    g.addRelationship(makeRel(PAGE, 'go:func:auth.ValidateToken', RelationshipType.DOCUMENTED_BY, {
+      tag: 'resolved',
+    }));
+    return g;
+  }
+
+  it('a PAGE lists the session events it is Evidenced By, tagged resolved with the commit', async () => {
+    const result = await handleToolCall('recon_explain', { name: 'Auth Evidence Page' }, graphWithCitations());
+    expect(result).toContain('Evidenced By');
+    expect(result).toContain('prompt @ t0');
+    expect(result).toContain('[EVIDENCED_BY]');
+    expect(result).toContain('(resolved');
+    expect(result).toContain('commit 5615acb');
+  });
+
+  it('an EVIDENCED_BY edge with an unresolved commit renders the inferred tag', async () => {
+    const result = await handleToolCall('recon_explain', { name: 'Auth Evidence Page' },
+      graphWithCitations({ commitResolved: false }));
+    expect(result).toContain('[EVIDENCED_BY]');
+    expect(result).toContain('(inferred');
+  });
+
+  it('a SessionEvent lists the pages it is Evidence For (incoming EVIDENCED_BY), tagged', async () => {
+    const result = await handleToolCall('recon_explain', { name: 'prompt @ t0' }, graphWithCitations());
+    expect(result).toContain('Evidence For');
+    expect(result).toContain('Auth Evidence Page');
+    expect(result).toContain('[EVIDENCED_BY]');
+    expect(result).toContain('(resolved');
+  });
+});
+
+// ─── verified-only view (citation-recon R3, #20) ──────────────────
+
+describe('recon_explain verified-only view excludes inferred citations (citation-recon R3, #20)', () => {
+  const PAGE = 'md:page:.wrxn/wiki/concepts/mixed.md';
+
+  // A Page evidenced by two sessions: one whose commit resolves (resolved) and one
+  // whose commit does NOT (inferred) — the verified-only view drops the latter.
+  function graphWithMixedEvidence(): KnowledgeGraph {
+    const g = buildMockGraph();
+    g.addNode(makeNode(PAGE, 'Mixed Evidence Page', {
+      type: NodeType.Page, file: '.wrxn/wiki/concepts/mixed.md',
+      language: Language.Markdown, package: '.wrxn/wiki/concepts', exported: false,
+    }));
+    g.addNode(makeNode('event:sess-1:0', 'resolved prompt', {
+      type: NodeType.SessionEvent, file: '.wrxn/events/sess-1.jsonl', startLine: 1, endLine: 1,
+      language: Language.Json, package: 'sess-1', exported: false,
+    }));
+    g.addNode(makeNode('event:sess-2:0', 'inferred prompt', {
+      type: NodeType.SessionEvent, file: '.wrxn/events/sess-2.jsonl', startLine: 1, endLine: 1,
+      language: Language.Json, package: 'sess-2', exported: false,
+    }));
+    g.addRelationship(makeRel(PAGE, 'event:sess-1:0', RelationshipType.EVIDENCED_BY,
+      { tag: 'resolved', commit: '5615acb', commitResolved: true }));
+    g.addRelationship(makeRel(PAGE, 'event:sess-2:0', RelationshipType.EVIDENCED_BY,
+      { tag: 'resolved', commit: 'deadbee', commitResolved: false }));
+    return g;
+  }
+
+  it('the default view shows BOTH resolved and inferred citations', async () => {
+    const result = await handleToolCall('recon_explain', { name: 'Mixed Evidence Page' }, graphWithMixedEvidence());
+    expect(result).toContain('resolved prompt');
+    expect(result).toContain('inferred prompt');
+  });
+
+  it('verified:true excludes the inferred citation, keeps the resolved one', async () => {
+    const result = await handleToolCall('recon_explain', { name: 'Mixed Evidence Page', verified: true }, graphWithMixedEvidence());
+    expect(result).toContain('resolved prompt');
+    expect(result).not.toContain('inferred prompt');
+  });
+
+  // F1 (#24): the handler honors `verified` (above), but MCP clients can only USE it
+  // if the tool advertises it in its inputSchema. Pin that the contract exposes it.
+  it('recon_explain advertises `verified` as an optional, documented boolean (discoverable)', () => {
+    const tool = RECON_TOOLS.find((t) => t.name === 'recon_explain');
+    expect(tool).toBeDefined();
+    const prop = tool!.inputSchema.properties.verified;
+    expect(prop).toBeDefined();
+    expect(prop.type).toBe('boolean');
+    expect(prop.description).toBeTruthy();
+    expect(tool!.inputSchema.required ?? []).not.toContain('verified'); // optional
   });
 });
 

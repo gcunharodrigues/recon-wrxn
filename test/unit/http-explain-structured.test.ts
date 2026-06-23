@@ -86,3 +86,61 @@ describe('recon_explain structured neighbors (recon-brain-recall-review #5)', ()
     expect(result).toBe(await handleToolCall('recon_explain', { name: 'NoSuchSymbol' }, graph));
   });
 });
+
+// ─── citation neighbors carry the resolved/inferred tag (R3, #20) ──
+
+describe('recon_explain structured citation neighbors (citation-recon R3, #20)', () => {
+  const PAGE = 'md:page:.wrxn/wiki/concepts/auth.md';
+
+  // A Page that cites a session (EVIDENCED_BY → SessionEvent) and a code symbol
+  // (DOCUMENTED_BY → ValidateToken), each tagged as R2 stamps them.
+  function citationGraph(commitResolved = true): KnowledgeGraph {
+    const g = buildGraph();
+    g.addNode(node(PAGE, 'Auth Evidence Page', {
+      type: NodeType.Page, file: '.wrxn/wiki/concepts/auth.md',
+      language: Language.Markdown, package: '.wrxn/wiki/concepts', exported: false,
+    }));
+    g.addNode(node('event:sess-1:0', 'prompt @ t0', {
+      type: NodeType.SessionEvent, file: '.wrxn/events/sess-1.jsonl', startLine: 1,
+      language: Language.Json, package: 'sess-1', exported: false,
+    }));
+    g.addRelationship({
+      id: `${PAGE}-EVIDENCED_BY-event`, type: RelationshipType.EVIDENCED_BY,
+      sourceId: PAGE, targetId: 'event:sess-1:0', confidence: 0.9,
+      metadata: { tag: 'resolved', commit: '5615acb', commitResolved },
+    });
+    g.addRelationship({
+      id: `${PAGE}-DOCUMENTED_BY-vt`, type: RelationshipType.DOCUMENTED_BY,
+      sourceId: PAGE, targetId: 'f:vt', confidence: 0.9, metadata: { tag: 'resolved' },
+    });
+    return g;
+  }
+
+  it('a PAGE surfaces evidencedBy + documents neighbors, each carrying its tag', () => {
+    const { neighbors } = explainStructured({ name: 'Auth Evidence Page' }, citationGraph());
+    expect(neighbors.find(n => n.relationship === 'evidencedBy')).toMatchObject({
+      name: 'prompt @ t0', relationship: 'evidencedBy', tag: 'resolved', commit: '5615acb',
+    });
+    expect(neighbors.find(n => n.relationship === 'documents')).toMatchObject({
+      name: 'ValidateToken', relationship: 'documents', tag: 'resolved',
+    });
+  });
+
+  it('an EVIDENCED_BY edge whose commit does not resolve is tagged inferred', () => {
+    const { neighbors } = explainStructured({ name: 'Auth Evidence Page' }, citationGraph(false));
+    expect(neighbors.find(n => n.relationship === 'evidencedBy')?.tag).toBe('inferred');
+  });
+
+  it('verified:true drops the inferred neighbor from the structured view, keeps resolved ones', () => {
+    const { neighbors } = explainStructured({ name: 'Auth Evidence Page', verified: true }, citationGraph(false));
+    expect(neighbors.some(n => n.relationship === 'evidencedBy')).toBe(false); // inferred → dropped
+    expect(neighbors.some(n => n.relationship === 'documents')).toBe(true);    // resolved → kept
+  });
+
+  it('a SessionEvent surfaces evidenceFor neighbors (incoming EVIDENCED_BY), tagged', () => {
+    const { neighbors } = explainStructured({ name: 'prompt @ t0' }, citationGraph());
+    expect(neighbors.find(n => n.relationship === 'evidenceFor')).toMatchObject({
+      name: 'Auth Evidence Page', relationship: 'evidenceFor', tag: 'resolved',
+    });
+  });
+});

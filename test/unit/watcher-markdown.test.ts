@@ -297,6 +297,56 @@ describe('watcher .md change — DOCUMENTED_BY regeneration (slice B fix 2)', ()
   });
 });
 
+// ─── citation-recon R2 #22: evidence edges regenerated on live reload ──
+
+describe('watcher .md change — EVIDENCED_BY regeneration (evidence edges, #22)', () => {
+  // R2 wired resolveEvidenceEdges into the INDEX path (commands.ts ingestProse)
+  // but NOT the live watcher reload, so EVIDENCED_BY/DOCUMENTED_BY from a page's
+  // evidence:{session,commit,symbols} block went STALE on a live edit until the
+  // next full re-index. The surgical path must mirror the doc-edges regeneration.
+  const evidenceEdges = () =>
+    [...graph.allRelationships()].filter((r) => r.type === RelationshipType.EVIDENCED_BY);
+
+  /** A SessionEvent the page's evidence can cite (R1 carries the sid as node.package). */
+  const seedEvent = () =>
+    graph.addNode({
+      id: 'event:sess-1:0', type: NodeType.SessionEvent, name: 'prompt @ t0',
+      file: '.wrxn/events/sess-1.jsonl', startLine: 1, endLine: 1,
+      language: Language.Json, package: 'sess-1', exported: false, eventKind: 'prompt',
+    });
+
+  it('regenerates EVIDENCED_BY edges from the reparsed file\'s evidence frontmatter', async () => {
+    seedEvent();
+    // No evidence edge yet — the seed corpus declares no evidence block.
+    expect(evidenceEdges()).toHaveLength(0);
+
+    writeFileSync(
+      join(root, 'docs', 'a.md'),
+      '---\nevidence:\n  session: sess-1\n  commit: 5615acb\n---\n# Alpha\nAlpha body.\n',
+    );
+    await fire('docs/a.md', 'change');
+
+    // evidence.session sess-1 → Page → its SessionEvent EVIDENCED_BY edge, exactly
+    // as the full index resolves it (commands.ts ingestProse).
+    expect(evidenceEdges().some(
+      (e) => e.sourceId === 'md:page:docs/a.md' && e.targetId === 'event:sess-1:0',
+    )).toBe(true);
+  });
+
+  it('also resolves evidence edges on a brand-new .md (add path)', async () => {
+    seedEvent();
+    writeFileSync(
+      join(root, 'docs', 'c.md'),
+      '---\nevidence:\n  session: sess-1\n---\n# Gamma\nGamma body.\n',
+    );
+    await fire('docs/c.md', 'add');
+
+    expect(evidenceEdges().some(
+      (e) => e.sourceId === 'md:page:docs/c.md' && e.targetId === 'event:sess-1:0',
+    )).toBe(true);
+  });
+});
+
 describe('watcher onChange callback (slice B fix 3)', () => {
   it('fires onChange after a processed add/change event', async () => {
     let calls = 0;

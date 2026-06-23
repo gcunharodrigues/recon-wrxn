@@ -36,6 +36,7 @@ export enum NodeType {
   Page = 'Page',          // Prose: one whole markdown file
   Section = 'Section',    // Prose: one heading + the body beneath it (primary retrieval unit)
   Source = 'Source',      // Raw source file (html/txt → full searchable; pdf/docx/pptx/xlsx → minimal node, path only)
+  SessionEvent = 'SessionEvent', // Session telemetry: one .wrxn/events/*.jsonl record (prompt | tool)
 }
 
 export enum RelationshipType {
@@ -50,6 +51,7 @@ export enum RelationshipType {
   EXTENDS = 'EXTENDS',        // Class → Class (inheritance)
   USES_TYPE = 'USES_TYPE',    // Function/Component → Type (generic type argument usage)
   DOCUMENTED_BY = 'DOCUMENTED_BY', // Prose (Page/Section) → CodeSymbol (resolution deferred to a later slice)
+  EVIDENCED_BY = 'EVIDENCED_BY', // Page → SessionEvent: kernel evidence-frontmatter provenance (citation-recon R2, #19)
 }
 
 export enum Language {
@@ -119,6 +121,13 @@ export interface Node {
 
   // Code-symbol-specific (optional)
   fingerprint?: string;    // sync-02: stable fingerprint of the symbol's tree-sitter AST (body/signature-sensitive, reformat/comment-insensitive)
+
+  // SessionEvent-specific (optional) — citation-recon R1 (#18). Metadata lifted from
+  // a .wrxn/events/*.jsonl record; the prompt body is kept OFF the node (searchText).
+  eventKind?: string;      // the record's kind: 'prompt' | 'tool'
+  ts?: string;             // the record's timestamp (carried verbatim as a string)
+  tool?: string;           // tool record only: the tool name (e.g. 'Edit')
+  target?: string;         // tool record only: the tool target (e.g. a file path)
 }
 
 // ─── Relationship ───────────────────────────────────────────────
@@ -132,6 +141,10 @@ export interface Relationship {
   metadata?: {
     httpMethod?: string;   // For CALLS_API
     urlPattern?: string;   // For CALLS_API
+    // citation-recon R2 (#19) — evidence-edge resolution, stamped at index time:
+    tag?: 'resolved' | 'inferred'; // resolved = target node provably exists; inferred = heuristic/unverified link
+    commit?: string;        // EVIDENCED_BY: the evidence.commit sha watermark (no commit node exists, so it rides here)
+    commitResolved?: boolean; // EVIDENCED_BY: true iff `commit` is a syntactically valid sha (resolved); false = inferred
   };
 }
 

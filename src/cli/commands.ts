@@ -27,10 +27,13 @@ import { initEmbedder, embedBatch, disposeEmbedder, DEFAULT_CONFIG } from '../se
 import { analyzeTreeSitter, analyzeTreeSitterParallel } from '../analyzers/tree-sitter/index.js';
 import { analyzeMarkdown, findMarkdownFiles } from '../analyzers/markdown.js';
 import type { MarkdownAnalysisResult } from '../analyzers/markdown.js';
+import { analyzeEvents, findEventFiles } from '../analyzers/events.js';
 import { loadReinforceSidecar, applyRecency } from '../analyzers/prose-signals.js';
 import type { AnalyzerWarning } from '../analyzers/types.js';
 import { analyzeSource, findSourceFiles } from '../analyzers/source.js';
 import { resolveDocEdges } from '../analyzers/doc-edges.js';
+import { resolveEvidenceEdges } from '../analyzers/evidence-edges.js';
+import { makeCommitExists } from '../analyzers/commit-check.js';
 import { getAvailableLanguages } from '../analyzers/tree-sitter/index.js';
 import { carryOverUnchangedTreeSitter, pruneDegenerateHashes, shouldReactiveHeal, serveNeedsReindex } from '../analyzers/tree-sitter/carryover.js';
 import { detectCommunities } from '../graph/community.js';
@@ -120,10 +123,32 @@ async function ingestProse(
   // so each caller reports them under a truthful banner — a skipped .json/.yaml is
   // not a "markdown file" (multiformat-distill-09).
 
+  // Session events (citation-recon R1, #18): lift .wrxn/events/*.jsonl into the
+  // graph as SessionEvent nodes, right AFTER prose — mirroring the prose seam.
+  // tree-sitter/markdown/source don't claim .jsonl, so events own it (no double
+  // ingest). The prompt body is kept OFF the node and merged into the searchText
+  // snapshot, exactly like prose; deterministic ids (event:<file>:<line>) make
+  // re-indexing idempotent. Pure analyzer + its own walker, fail-open when absent.
+  const eventsResult = analyzeEvents(findEventFiles(walkRoot, maxFileSize));
+  for (const node of eventsResult.nodes) {
+    graph.addNode(node);
+  }
+  Object.assign(mdResult.searchText, eventsResult.searchText);
+
   // Resolve doc→code DOCUMENTED_BY edges now that BOTH code (tree-sitter +
   // cross-language, added before this call) and the prose nodes above are in the
   // graph (recon-prose-analyzer-06). Unresolvable signals add no edge.
   for (const edge of resolveDocEdges(graph, mdResult.citations)) {
+    graph.addRelationship(edge);
+  }
+  // Resolve evidence-frontmatter edges (citation-recon R2, #19): now that code,
+  // prose AND R1's SessionEvent nodes are all in the graph, turn each page's frozen
+  // evidence:{session,commit,symbols} block into EVIDENCED_BY (page→SessionEvent,
+  // commit watermark) + DOCUMENTED_BY (page→symbol, reusing doc-edges' resolution)
+  // edges, each tagged resolved/inferred. Added AFTER doc edges so an evidence-derived
+  // DOCUMENTED_BY (carrying metadata.tag) wins on id-collision with the same plain
+  // derived_from edge. Fail-soft: unresolvable evidence adds no edge, never throws.
+  for (const edge of resolveEvidenceEdges(graph, mdResult.evidence, makeCommitExists(walkRoot))) {
     graph.addRelationship(edge);
   }
   await saveSearchText(saveRoot, mdResult.searchText, repoName);
